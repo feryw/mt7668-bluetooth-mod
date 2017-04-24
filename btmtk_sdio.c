@@ -1946,6 +1946,52 @@ static int btmtk_sdio_host_to_card(struct btmtk_private *priv,
          BTMTK_INFO("%s end\n", __func__);
  }
 
+
+/*
+cmd_type:
+#define HCI_COMMAND_PKT         0x01
+#define HCI_ACLDATA_PKT         0x02
+#define HCI_SCODATA_PKT         0x03
+#define HCI_EVENT_PKT           0x04
+#define HCI_VENDOR_PKT          0xff
+
+
+*/
+  static int btmtk_sdio_send_cmd(u8 cmd_type,u8* cmd,int cmd_len)
+ {
+        u8 ret = 0;
+        u32 sdio_header_len = 0;
+
+        u8 *send_data = NULL;
+
+        if(cmd_len==0){
+                BTMTK_ERR("%s cmd_len (%d) error return\n", __func__,cmd_len);
+                return -EINVAL;
+        }
+
+        send_data = kmalloc(cmd_len+BTM_HEADER_LEN, GFP_KERNEL);
+        sdio_header_len = cmd_len + BTM_HEADER_LEN;
+        memset(send_data, 0, cmd_len+BTM_HEADER_LEN);
+        send_data[0] = (sdio_header_len & 0x0000ff);
+        send_data[1] = (sdio_header_len & 0x00ff00) >> 8;
+        send_data[2] = 0;
+        send_data[3] = 0;
+        send_data[4] = cmd_type ;
+        memcpy(&send_data[BTM_HEADER_LEN], &cmd[0], cmd_len);
+        ret = btmtk_sdio_host_to_card(g_priv, send_data, sdio_header_len);
+        return ret;
+ }
+ static int btmtk_sdio_send_woble_cmd(void)
+ {
+        u8 ret = 0;
+                u8 cmd[] = { 0xC9, 0xFC, 0x0D, 0x01, 0x0E, 0x00, 0x05, 0x43,
+                                0x52, 0x4B, 0x54, 0x4D, 0x20, 0x04, 0x32, 0x00 };
+
+        ret = btmtk_sdio_send_cmd(HCI_COMMAND_PKT,cmd,sizeof(cmd));
+        BTMTK_INFO("%s return %d\n", __func__,ret);
+        return ret;
+ }
+
  static int btmtk_sdio_suspend(struct device *dev)
  {
          struct sdio_func *func = dev_to_sdio_func(dev);
@@ -1955,7 +2001,9 @@ static int btmtk_sdio_host_to_card(struct btmtk_private *priv,
          struct hci_dev *hcidev;
          u8 ret = 0;
 
-         BTMTK_INFO("%s begin return 0, do nothing", __func__);
+         ret = btmtk_sdio_set_own_back(DRIVER_OWN);
+         ret = btmtk_sdio_send_woble_cmd();
+
          return sdio_set_host_pm_flags(func, MMC_PM_KEEP_POWER);
 
          btmtk_sdio_bt_set_power(0);
