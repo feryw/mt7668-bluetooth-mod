@@ -564,7 +564,7 @@ static int btmtk_sdio_recv_rx_data(void)
     int ret = 0;
     u32 u32ReadCRValue = 0;
     int retry_count = 5;
-
+    u32 sdio_header_length = 0;
     memset(rxbuf, 0, MTK_RXDATA_SIZE);
 
     do {
@@ -582,13 +582,21 @@ static int btmtk_sdio_recv_rx_data(void)
             u32ReadCRValue &= 0xFFFB;
             ret = btmtk_sdio_writel(CHISR, u32ReadCRValue);
             BTMTK_DBG("%s: write = %08X\n", __func__, u32ReadCRValue);
-            
+
 
             sdio_claim_host(g_card->func);
             ret = sdio_readsb(g_card->func, rxbuf, CRDR, rx_length);
             sdio_release_host(g_card->func);
-            if (rxbuf[0] == 0) {
-                BTMTK_WARN("%s: get rx length = %d, but no rx content\n", __func__, rx_length);
+            sdio_header_length = (rxbuf[1] << 8);
+            sdio_header_length |= rxbuf[0];
+
+            if(sdio_header_length != rx_length){
+                BTMTK_ERR("%s sdio header length %d, rx_length %d mismatch",__func__,sdio_header_length,rx_length);
+                break;
+            }
+
+            if (sdio_header_length == 0) {
+                BTMTK_WARN("%s: get sdio_header_length = %d\n", __func__, sdio_header_length);
                 continue;
             }
 
@@ -1870,11 +1878,11 @@ static int btmtk_sdio_host_to_card(struct btmtk_private *priv,
          priv->hw_host_to_card = btmtk_sdio_host_to_card;
          priv->hw_process_int_status = btmtk_sdio_process_int_status;
          priv->hw_set_own_back =  btmtk_sdio_set_own_back;
-         if (btmtk_register_hdev(priv)) {
+         /*if (btmtk_register_hdev(priv)) {
                  BTMTK_ERR("Register hdev failed!");
                  ret = -ENODEV;
                  goto unreg_dev;
-         }
+         }*/
         g_priv = priv;
         if (fw_dump_ptr == NULL)
             fw_dump_ptr = kmalloc(FW_DUMP_BUF_SIZE, GFP_ATOMIC);
@@ -1979,13 +1987,14 @@ cmd_type:
         send_data[4] = cmd_type ;
         memcpy(&send_data[BTM_HEADER_LEN], &cmd[0], cmd_len);
         ret = btmtk_sdio_host_to_card(g_priv, send_data, sdio_header_len);
+        kfree(send_data);
         return ret;
  }
  static int btmtk_sdio_send_woble_cmd(void)
  {
         u8 ret = 0;
-                u8 cmd[] = { 0xC9, 0xFC, 0x0D, 0x01, 0x0E, 0x00, 0x05, 0x43,
-                                0x52, 0x4B, 0x54, 0x4D, 0x20, 0x04, 0x32, 0x00 };
+        u8 cmd[] = { 0xC9, 0xFC, 0x0D, 0x01, 0x0E, 0x00, 0x05, 0x43,
+                     0x52, 0x4B, 0x54, 0x4D, 0x20, 0x04, 0x32, 0x00 };
 
         ret = btmtk_sdio_send_cmd(HCI_COMMAND_PKT,cmd,sizeof(cmd));
         BTMTK_INFO("%s return %d\n", __func__,ret);
