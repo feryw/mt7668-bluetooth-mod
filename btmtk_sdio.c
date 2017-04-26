@@ -45,7 +45,9 @@ u8 btmtk_log_lvl = BTMTK_LOG_LEVEL_DEFAULT;
 static struct class *pBTClass;
 static struct device *pBTDev;
 static wait_queue_head_t inq;
+static struct fasync_struct *fasync;
 
+static int need_reset_stack;
 /* The btmtk_sdio_remove() callback function is called
  * when user removes this module from kernel space or ejects
  * the card from the slot. The driver handles these 2 cases
@@ -1474,14 +1476,6 @@ static int btmtk_sdio_process_int_status(struct btmtk_private *priv)
         return 0;
 }
 
-int hci_recv_fragment(struct hci_dev *hdev, int type, void *data, int count)
-{
-        int rem = 0;
-
-
-
-        return rem;
-}
 
 static void btmtk_sdio_interrupt(struct sdio_func *func)
 {
@@ -1878,11 +1872,7 @@ static int btmtk_sdio_host_to_card(struct btmtk_private *priv,
          priv->hw_host_to_card = btmtk_sdio_host_to_card;
          priv->hw_process_int_status = btmtk_sdio_process_int_status;
          priv->hw_set_own_back =  btmtk_sdio_set_own_back;
-         /*if (btmtk_register_hdev(priv)) {
-                 BTMTK_ERR("Register hdev failed!");
-                 ret = -ENODEV;
-                 goto unreg_dev;
-         }*/
+
         g_priv = priv;
         if (fw_dump_ptr == NULL)
             fw_dump_ptr = kmalloc(FW_DUMP_BUF_SIZE, GFP_ATOMIC);
@@ -2004,107 +1994,18 @@ cmd_type:
  static int btmtk_sdio_suspend(struct device *dev)
  {
          struct sdio_func *func = dev_to_sdio_func(dev);
-         struct btmtk_sdio_card *card;
-         struct btmtk_private *priv;
-         mmc_pm_flag_t pm_flags;
-         struct hci_dev *hcidev;
          u8 ret = 0;
 
          ret = btmtk_sdio_set_own_back(DRIVER_OWN);
          ret = btmtk_sdio_send_woble_cmd();
-
+         need_reset_stack = 1;
+         BTMTK_ERR("%s set reset_stack 1\n", __func__);
          return sdio_set_host_pm_flags(func, MMC_PM_KEEP_POWER);
-
-         btmtk_sdio_bt_set_power(0);
-         ret = btmtk_sdio_set_own_back(FW_OWN);
-         if (ret) {
-            BTMTK_ERR("%s set DRIVER_FW fail", __func__);
-            return -EBUSY;
-         }
-
-         if (func) {
-                 pm_flags = sdio_get_host_pm_caps(func);
-                 BTMTK_DBG("%s: suspend: PM flags = 0x%x", sdio_func_id(func),
-                        pm_flags);
-                 if (!(pm_flags & MMC_PM_KEEP_POWER)) {
-                         BTMTK_ERR("%s: cannot remain alive while suspended",
-                                sdio_func_id(func));
-                         return -EINVAL;
-                 }
-                 card = sdio_get_drvdata(func);
-                 if (!card || !card->priv) {
-                         BTMTK_ERR("card or priv structure is not valid");
-                         return 0;
-                 }
-         } else {
-                 BTMTK_ERR("sdio_func is not specified");
-                 return 0;
-         }
-
-         priv = card->priv;
-         hcidev = priv->btmtk_dev.hcidev;
-         BTMTK_DBG("%s: SDIO suspend", hcidev->name);
-         skb_queue_purge(&priv->adapter->tx_queue);
-
-
-
-
-         if (priv->adapter->hs_state != HS_ACTIVATED) {
-                 if (btmtk_enable_hs(priv)) {
-                         BTMTK_ERR("HS not actived, suspend failed!");
-                         return -EBUSY;
-                 }
-         }
-
-
-         priv->adapter->is_suspended = true;
-
-
-         if (priv->adapter->hs_state == HS_ACTIVATED) {
-                 BTMTK_DBG("suspend with MMC_PM_KEEP_POWER");
-                 return sdio_set_host_pm_flags(func, MMC_PM_KEEP_POWER);
-         } else {
-                 BTMTK_DBG("suspend without MMC_PM_KEEP_POWER");
-                 return 0;
-         }
  }
 
  static int btmtk_sdio_resume(struct device *dev)
  {
-
-         struct sdio_func *func = dev_to_sdio_func(dev);
-         struct btmtk_sdio_card *card;
-         struct btmtk_private *priv;
-         mmc_pm_flag_t pm_flags;
-         struct hci_dev *hcidev;
-
          BTMTK_INFO("%s begin return 0, do nothing", __func__);
-         return 0;
-
-         if (func) {
-                 pm_flags = sdio_get_host_pm_caps(func);
-                 BTMTK_DBG("%s: resume: PM flags = 0x%x", sdio_func_id(func),
-                        pm_flags);
-                 card = sdio_get_drvdata(func);
-                 if (!card || !card->priv) {
-                         BTMTK_ERR("card or priv structure is not valid");
-                         return 0;
-                 }
-         } else {
-                 BTMTK_ERR("sdio_func is not specified");
-                 return 0;
-         }
-         priv = card->priv;
-
-         if (!priv->adapter->is_suspended)
-                 BTMTK_DBG("device already resumed");
-
-         priv->adapter->hs_state = HS_DEACTIVATED;
-         hcidev = priv->btmtk_dev.hcidev;
-         BTMTK_DBG("%s: HS DEACTIVATED in resume!", hcidev->name);
-         priv->adapter->is_suspended = false;
-         BTMTK_DBG("%s: SDIO resume", hcidev->name);
-
          return 0;
  }
 
@@ -2317,6 +2218,13 @@ ssize_t btmtk_fops_read(struct file *filp, char __user *buf, size_t count, loff_
         }
     }
 
+    if (need_reset_stack == 1){
+        kill_fasync(&fasync, SIGIO, POLL_IN);
+        need_reset_stack = 0;
+        BTMTK_INFO("%s Call  kill_fasync and set reset_stack 0", __func__);
+        return -ENODEV;
+    }
+
     do {
         skb = skb_dequeue(&g_priv->adapter->fops_queue);
         if (skb == NULL) {
@@ -2363,6 +2271,12 @@ ssize_t btmtk_fops_read(struct file *filp, char __user *buf, size_t count, loff_
 
     //BTMTK_DBG("%s copyLen %d", __func__, copyLen);
     return copyLen;
+}
+
+static int btmtk_fops_fasync(int fd, struct file *file, int on)
+{
+	BTMTK_INFO("%s: fd = 0x%X, flag = 0x%X", __func__, fd, on);
+	return fasync_helper(fd, file, on, &fasync);
 }
 
 unsigned int btmtk_fops_poll(struct file *filp, poll_table *wait)
@@ -2476,7 +2390,8 @@ const struct file_operations BTMTK_fops = {
     .read = btmtk_fops_read,
     .write = btmtk_fops_write,
     .poll = btmtk_fops_poll,
-    .unlocked_ioctl = btmtk_fops_unlocked_ioctl
+    .unlocked_ioctl = btmtk_fops_unlocked_ioctl,
+    .fasync = btmtk_fops_fasync
 };
 
 

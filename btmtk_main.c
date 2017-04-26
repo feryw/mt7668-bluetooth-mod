@@ -306,30 +306,7 @@ static int btmtk_service_main_thread(void *data)
         return 0;
 }
 
-int btmtk_register_hdev(struct btmtk_private *priv)
-{
-        struct hci_dev *hdev = NULL;
 
-        BTMTK_INFO("%s\n", __func__);
-        hdev = hci_alloc_dev();
-        if (!hdev) {
-                BTMTK_ERR("Can not allocate HCI device");
-                goto err_hdev;
-        }
-
-        hci_set_drvdata(hdev, priv);
-        return 0;
-
-err_hdev:
-        /* Stop the thread servicing the interrupts */
-        kthread_stop(priv->main_thread.task);
-
-        btmtk_free_adapter(priv);
-        kfree(priv);
-
-        return -ENOMEM;
-}
-EXPORT_SYMBOL_GPL(btmtk_register_hdev);
 
 struct btmtk_private *btmtk_add_card(void *card)
 {

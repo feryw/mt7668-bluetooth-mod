@@ -64,7 +64,7 @@
 
  struct btmtk_device {
          void *card;
-         struct hci_dev *hcidev;
+         //struct hci_dev *hcidev;
 
          u8 dev_type;
 
@@ -182,7 +182,6 @@
 
  /* Prototype of global function */
 
- int btmtk_register_hdev(struct btmtk_private *priv);
  struct btmtk_private *btmtk_add_card(void *card);
  int btmtk_remove_card(struct btmtk_private *priv);
 
@@ -215,8 +214,6 @@ typedef struct {
 } ring_buffer_struct;
 
  #ifdef CONFIG_DEBUG_FS
- void btmtk_debugfs_init(struct hci_dev *hdev);
- void btmtk_debugfs_remove(struct hci_dev *hdev);
 
 #define FIXED_STPBT_MAJOR_DEV_ID 111
 
