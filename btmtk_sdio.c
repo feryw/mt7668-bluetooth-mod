@@ -41,10 +41,12 @@
 #include "btmtk_sdio.h"
 
 u8 btmtk_log_lvl = BTMTK_LOG_LEVEL_DEFAULT;
-
+static dev_t g_devIDfwlog;
 static struct class *pBTClass;
 static struct device *pBTDev;
+struct device *pBTDevfwlog;
 static wait_queue_head_t inq;
+static wait_queue_head_t fw_log_inq;
 static struct fasync_struct *fasync;
 
 static int need_reset_stack;
@@ -2098,7 +2100,6 @@ ssize_t btmtk_fops_write(struct file *filp, const char __user *buf, size_t count
     int retval = 0;
     struct sk_buff *skb = NULL;
     u32 crAddr = 0, crValue = 0, crMask = 0;
-    struct sk_buff *queue_skb = NULL;
     /*int i = 0;*/
 
     if (!probe_ready) {
@@ -2177,8 +2178,7 @@ ssize_t btmtk_fops_write(struct file *filp, const char __user *buf, size_t count
         bt_cb(skb)->pkt_type = buf[0];
         memcpy(&skb->data[0], &buf[1], count-1);
         skb->len = count-1;
-        queue_skb = skb;
-        skb_queue_tail(&g_priv->adapter->tx_queue, queue_skb);
+        skb_queue_tail(&g_priv->adapter->tx_queue, skb);
         wake_up_interruptible(&g_priv->main_thread.wait_q);
 
         retval = count;
@@ -2316,72 +2316,172 @@ long btmtk_fops_unlocked_ioctl(struct file *filp, unsigned int cmd, unsigned lon
     return retval;
 }
 
- static int btmtk_fops_openfwlog(struct inode *inode, struct file *file)
- {
-     if (g_priv == NULL) {
-         BTMTK_ERR("%s: ERROR, g_data is NULL!", __func__);
-         return -ENODEV;
-     }
+static int btmtk_fops_openfwlog(struct inode *inode, struct file *file)
+{
+	if (g_priv == NULL) {
+		BTMTK_ERR("%s: ERROR, g_data is NULL!", __func__);
+		return -ENODEV;
+	}
 
-     BTMTK_ERR("%s: OK", __func__);
-     return 0;
- }
+	BTMTK_INFO("%s: OK", __func__);
+	return 0;
+}
 
- static int btmtk_fops_closefwlog(struct inode *inode, struct file *file)
- {
-     if (g_priv == NULL) {
-         BTMTK_ERR("%s: ERROR, g_data is NULL!", __func__);
-         return -ENODEV;
-     }
+static int btmtk_fops_closefwlog(struct inode *inode, struct file *file)
+{
+	if (g_priv == NULL) {
+		BTMTK_ERR("%s: ERROR, g_data is NULL!", __func__);
+		return -ENODEV;
+	}
 
+	BTMTK_INFO("%s: OK", __func__);
+	return 0;
+}
 
-     BTMTK_ERR("%s: OK", __func__);
-     return 0;
- }
+static ssize_t btmtk_fops_readfwlog(struct file *filp, char __user *buf, size_t count, loff_t *f_pos)
+{
+	int copyLen = 0;
 
- static ssize_t btmtk_fops_readfwlog(struct file *filp, char __user *buf,
-                    size_t count, loff_t *f_pos)
- {
-     int copyLen = 0;
+	if (g_priv == NULL) {
+		BTMTK_ERR("%s: ERROR, g_data is NULL!", __func__);
+		return -ENODEV;
+	}
 
-     if (g_priv == NULL)
-         return -ENODEV;
+	BTMTK_INFO("%s: OK", __func__);
+	return copyLen;
+}
 
+static ssize_t btmtk_fops_writefwlog(struct file *filp, const char __user *buf,
+					size_t count, loff_t *f_pos)
+{
+	struct sk_buff *skb = NULL;
+	int length = 0, i, j = 0;
+	u8 *i_fwlog_buf = kmalloc(HCI_MAX_COMMAND_BUF_SIZE, GFP_KERNEL);
+	u8 *o_fwlog_buf = kmalloc(HCI_MAX_COMMAND_SIZE, GFP_KERNEL);
+	const char *val_param = NULL;
 
-     return copyLen;
- }
-
- static ssize_t btmtk_fops_writefwlog(struct file *filp, const char __user *buf,
-                     size_t count, loff_t *f_pos)
- {
-     int retval = 0;
-     return retval;
- }
-
- static unsigned int btmtk_fops_pollfwlog(struct file *file, poll_table *wait)
- {
-     unsigned int mask = 0;
-     return mask;
- }
-
- static long btmtk_fops_unlocked_ioctlfwlog(struct file *filp, unsigned int cmd,
-                       unsigned long arg)
- {
-     int retval = 0;
-
-     BTMTK_INFO("%s: ->", __func__);
-     if (g_priv == NULL) {
-         BTMTK_ERR("%s: ERROR, g_data is NULL!", __func__);
-         return -ENODEV;
-     }
-
-     return retval;
- }
+	memset(i_fwlog_buf, 0, HCI_MAX_COMMAND_BUF_SIZE);
+	memset(o_fwlog_buf, 0, HCI_MAX_COMMAND_SIZE);
 
 
- static int BTMTK_major;
- static struct cdev BTMTK_cdev;
- static int BTMTK_devs = 1;
+	if (g_priv == NULL) {
+		BTMTK_INFO("%s g_priv is NULL", __func__);
+		goto exit;
+	}
+	if (count > HCI_MAX_COMMAND_BUF_SIZE) {
+		BTMTK_ERR("%s: your command is larger than maximum length, count = %zd\n", __func__, count);
+		goto exit;
+	}
+
+	for (i = 0; i < count; i++) {
+		if (buf[i] != '=' ) {
+			i_fwlog_buf[i] = buf[i];
+			BTMTK_DBG("%s: tag_param %02x", __func__, i_fwlog_buf[i]);
+		}
+		else {
+			val_param = &buf[i+1];
+			if (strcmp(i_fwlog_buf, "log_lvl") == 0) {
+				BTMTK_INFO("%s: btmtk_log_lvl = %d", __func__, val_param[0] - 48);
+				btmtk_log_lvl = val_param[0] - 48;
+			}
+			goto exit;
+		}
+	}
+
+	if (i == count) {
+		/* hci input command format : echo 01 be fc 01 05 > /dev/stpbtfwlog */
+		/* We take the data from index three to end. */
+		val_param = &buf[0];
+	}
+	length = strlen(val_param);
+
+	for (i = 0; i < length; i++) {
+		u8 ret = 0;
+		u8 temp_str[3] = { 0 };
+		long res = 0;
+
+		if (val_param[i] == ' ' || val_param[i] == '\t' || val_param[i] == '\r' || val_param[i] == '\n')
+			continue;
+		if ((val_param[i] == '0' && val_param[i + 1] == 'x')
+				|| (val_param[0] == '0' && val_param[i + 1] == 'X')) {
+			i++;
+			continue;
+		}
+		if (!(val_param[i] >= '0' && val_param[i] <= '9')
+				&& !(val_param[i] >= 'A' && val_param[i] <= 'F')
+				&& !(val_param[i] >= 'a' && val_param[i] <= 'f')) {
+			break;
+		}
+		temp_str[0] = *(val_param+i);
+		temp_str[1] = *(val_param+i+1);
+		ret = (u8) (kstrtol((char *)temp_str, 16, &res) & 0xff);
+		o_fwlog_buf[j++] = res;
+		i++;
+	}
+	length = j;
+
+
+
+	/* Receive command from stpbtfwlog, then Sent hci command to controller */
+	BTMTK_DBG("%s: hci buff is %02x%02x%02x%02x%02x ", __func__, o_fwlog_buf[0]
+		, o_fwlog_buf[1], o_fwlog_buf[2], o_fwlog_buf[3], o_fwlog_buf[4]);
+	/* check HCI command length */
+	if (length > HCI_MAX_COMMAND_SIZE) {
+		BTMTK_ERR("%s: your command is larger than maximum length, length = %d\n", __func__, length);
+		goto exit;
+	}
+
+	BTMTK_DBG("%s: hci buff is %02x%02x%02x%02x%02x ", __func__, o_fwlog_buf[0]
+		, o_fwlog_buf[1], o_fwlog_buf[2], o_fwlog_buf[3], o_fwlog_buf[4]);
+
+	/* Receive command from stpbtfwlog, then Sent hci command to Stack */
+	skb = bt_skb_alloc(length - 1, GFP_ATOMIC);
+	bt_cb(skb)->pkt_type = o_fwlog_buf[0];
+	memcpy(&skb->data[0],&o_fwlog_buf[1],length - 1);
+	skb->len = length - 1;
+	skb_queue_tail(&g_priv->adapter->tx_queue, skb);
+	wake_up_interruptible(&g_priv->main_thread.wait_q);
+
+	BTMTK_INFO("%s write end", __func__);
+exit:
+	BTMTK_INFO("%s exit, length = %d", __func__, length);
+	kfree(i_fwlog_buf);
+	kfree(o_fwlog_buf);
+	return count;
+}
+
+static unsigned int btmtk_fops_pollfwlog(struct file *file, poll_table *wait)
+{
+	unsigned int mask = 0;
+
+	if (g_priv== NULL) {
+		BTMTK_ERR("%s: ERROR, g_data is NULL!", __func__);
+		return -ENODEV;
+	}
+
+	return mask;
+}
+
+static long btmtk_fops_unlocked_ioctlfwlog(struct file *filp, unsigned int cmd,
+					  unsigned long arg)
+{
+	int retval = 0;
+
+	BTMTK_INFO("%s: ->", __func__);
+	if (g_priv == NULL) {
+		BTMTK_ERR("%s: ERROR, g_data is NULL!", __func__);
+		return -ENODEV;
+	}
+
+	return retval;
+}
+
+
+static int BTMTK_major;
+static int BT_majorfwlog;
+static struct cdev BTMTK_cdev;
+static struct cdev BT_cdevfwlog;
+static int BTMTK_devs = 1;
 
 static wait_queue_head_t inq;
 const struct file_operations BTMTK_fops = {
@@ -2407,110 +2507,146 @@ const struct file_operations BT_fopsfwlog = {
 
 static int BTMTK_init(void)
 {
-    dev_t devID = MKDEV(BTMTK_major, 0);
-    int ret = 0;
-    int cdevErr = 0;
-    int major = 0;
+	dev_t devID = MKDEV(BTMTK_major, 0);
+	dev_t devIDfwlog = MKDEV(BT_majorfwlog, 1);
+	int ret = 0;
+	int cdevErr = 0;
+	int major = 0;
+	int majorfwlog = 0;
 
-    BTMTK_INFO("BTMTK_init\n");
+	BTMTK_INFO("BTMTK_init\n");
 
-    g_card = NULL;
-    txbuf = NULL;
-    rxbuf = NULL;
-    rx_length = 0;
+	g_card = NULL;
+	txbuf = NULL;
+	rxbuf = NULL;
+	rx_length = 0;
 
 #if SAVE_FW_DUMP_IN_KERNEL
-    fw_dump_file = NULL;
+	fw_dump_file = NULL;
 #else
-    fw_dump_file = 0;
+	fw_dump_file = 0;
 #endif
-    g_priv = NULL;
+	g_priv = NULL;
 
 
-    fw_dump_buffer_full = 0;
-    fw_dump_total_read_size = 0;
-    fw_dump_total_write_size = 0;
-    fw_dump_buffer_used_size = 0;
-    fw_dump_task_should_stop = 0;
-    fw_dump_ptr = NULL;
-    fw_dump_read_ptr = NULL;
-    fw_dump_write_ptr = NULL;
-    probe_counter = 0;
-    fw_dump_end_checking_task_should_stop = 0;
-    fw_is_doing_coredump = 0;
+	fw_dump_buffer_full = 0;
+	fw_dump_total_read_size = 0;
+	fw_dump_total_write_size = 0;
+	fw_dump_buffer_used_size = 0;
+	fw_dump_task_should_stop = 0;
+	fw_dump_ptr = NULL;
+	fw_dump_read_ptr = NULL;
+	fw_dump_write_ptr = NULL;
+	probe_counter = 0;
+	fw_dump_end_checking_task_should_stop = 0;
+	fw_is_doing_coredump = 0;
 
 
-    ret = alloc_chrdev_region(&devID, 0, 1, BT_DRIVER_NAME);
-    if (ret) {
-        BTMTK_ERR("fail to allocate chrdev\n");
-        return ret;
-    }
+	ret = alloc_chrdev_region(&devID, 0, 1, "BT_chrdev");
+	if (ret) {
+		BTMTK_ERR("fail to allocate chrdev\n");
+		return ret;
+	}
 
-    BTMTK_major = major = MAJOR(devID);
-    BTMTK_INFO("major number:%d", BTMTK_major);
+	ret = alloc_chrdev_region(&devIDfwlog, 0, 1, "BT_chrdevfwlog");
+	if (ret) {
+		BTMTK_ERR("fail to allocate chrdev");
+		return ret;
+	}
 
-    cdev_init(&BTMTK_cdev, &BTMTK_fops);
-    BTMTK_cdev.owner = THIS_MODULE;
+	BTMTK_major = major = MAJOR(devID);
+	BTMTK_INFO("major number:%d", BTMTK_major);
+	BT_majorfwlog = majorfwlog = MAJOR(devIDfwlog);
+	BTMTK_INFO("BT_majorfwlog number: %d", BT_majorfwlog);
+
+	cdev_init(&BTMTK_cdev, &BTMTK_fops);
+	BTMTK_cdev.owner = THIS_MODULE;
+
+	cdev_init(&BT_cdevfwlog, &BT_fopsfwlog);
+	BT_cdevfwlog.owner = THIS_MODULE;
 
     cdevErr = cdev_add(&BTMTK_cdev, devID, BTMTK_devs);
     if (cdevErr)
         goto error;
 
-    BTMTK_INFO("%s driver(major %d) installed.\n", BT_DRIVER_NAME, BTMTK_major);
+	cdevErr = cdev_add(&BT_cdevfwlog, devIDfwlog, 1);
+	if (cdevErr)
+		goto error;
 
-    pBTClass = class_create(THIS_MODULE, BT_DRIVER_NAME);
-    if (IS_ERR(pBTClass)) {
-        BTMTK_ERR("class create fail, error code(%ld)\n", PTR_ERR(pBTClass));
-        goto err1;
-    }
+	BTMTK_INFO("%s driver(major %d) installed.\n", "BT_chrdev", BTMTK_major);
+	BTMTK_INFO("%s driver(major %d) installed.\n", "BT_chrdevfwlog", BT_majorfwlog);
 
-    pBTDev = device_create(pBTClass, NULL, devID, NULL, BT_NODE);
-    if (IS_ERR(pBTDev)) {
-        BTMTK_ERR("device create fail, error code(%ld)\n", PTR_ERR(pBTDev));
-        goto err2;
-    }
+	pBTClass = class_create(THIS_MODULE, "BT_chrdev");
+	if (IS_ERR(pBTClass)) {
+		BTMTK_ERR("class create fail, error code(%ld)\n", PTR_ERR(pBTClass));
+		goto err1;
+	}
 
-    init_waitqueue_head(&(inq));
+	pBTDev = device_create(pBTClass, NULL, devID, NULL, BT_NODE);
+	if (IS_ERR(pBTDev)) {
+		BTMTK_ERR("device create fail, error code(%ld)\n", PTR_ERR(pBTDev));
+		goto err2;
+	}
 
-    return 0;
+	pBTDevfwlog = device_create(pBTClass, NULL, devIDfwlog, NULL, "stpbtfwlog");
+	if (IS_ERR(pBTDevfwlog)) {
+		BTMTK_ERR("device(stpbtfwlog) create fail, error code(%ld)", PTR_ERR(pBTDevfwlog));
+		goto err2;
+	}
+
+	BTMTK_INFO("%s: BT_major %d, BT_majorfwlog %d", __func__, BTMTK_major, BT_majorfwlog);
+	BTMTK_INFO("%s: devID %d, devIDfwlog %d", __func__, devID, devIDfwlog);
+
+	// init wait queue
+	g_devIDfwlog = devIDfwlog;
+	init_waitqueue_head(&(fw_log_inq));
+	init_waitqueue_head(&(inq));
+
+	return 0;
 
  err2:
-    if (pBTClass) {
-        class_destroy(pBTClass);
-        pBTClass = NULL;
-    }
+	if (pBTClass) {
+		class_destroy(pBTClass);
+		pBTClass = NULL;
+	}
 
  err1:
 
  error:
-    if (cdevErr == 0)
-        cdev_del(&BTMTK_cdev);
+	if (cdevErr == 0)
+		cdev_del(&BTMTK_cdev);
 
-    if (ret == 0)
-        unregister_chrdev_region(devID, BTMTK_devs);
+	if (ret == 0)
+		unregister_chrdev_region(devID, BTMTK_devs);
 
-    return -1;
+	return -1;
 }
 
 static void BTMTK_exit(void)
 {
-    dev_t dev = MKDEV(BTMTK_major, 0);
+	dev_t dev = MKDEV(BTMTK_major, 0);
+	dev_t devIDfwlog = g_devIDfwlog;
 
-    BTMTK_INFO("BTMTK_exit\n");
+	BTMTK_INFO("BTMTK_exit\n");
 
-    if (pBTDev) {
-        device_destroy(pBTClass, dev);
-        pBTDev = NULL;
-    }
+	if(pBTDevfwlog){
+		device_destroy(pBTClass,devIDfwlog);
+		pBTDevfwlog = NULL;
+	}
 
-    if (pBTClass) {
-        class_destroy(pBTClass);
-        pBTClass = NULL;
-    }
+	if (pBTDev) {
+		device_destroy(pBTClass, dev);
+		pBTDev = NULL;
+	}
 
-    cdev_del(&BTMTK_cdev);
-    unregister_chrdev_region(dev, 1);
-    BTMTK_INFO("%s driver removed.\n", BT_DRIVER_NAME);
+	if (pBTClass) {
+		class_destroy(pBTClass);
+		pBTClass = NULL;
+	}
+
+	cdev_del(&BTMTK_cdev);
+	unregister_chrdev_region(dev, 1);
+	BTMTK_INFO("%s driver removed.\n", BT_DRIVER_NAME);
 }
 
  static int __init btmtk_sdio_init_module(void)

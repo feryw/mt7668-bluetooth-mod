@@ -19,7 +19,7 @@
  *
  **/
 
-#define VERSION "v0.0.0.22"
+#define VERSION "v0.0.0.23"
 
 #define SDIO_HEADER_LEN                 4
 
@@ -196,6 +196,16 @@ typedef struct _PATCH_HEADER {
 #define PATCH_IS_DOWNLOAD_BT_OTHER 0
 #define PATCH_READY 1
 #define PATCH_NEED_DOWNLOAD 2
+
+/**
+ * stpbtfwlog device node
+ */
+#define HCI_MAX_COMMAND_SIZE		255
+/* Write a char to buffer.
+ * ex : echo 01 be > /dev/stpbtfwlog
+ * "01 " need three bytes.
+ */
+#define HCI_MAX_COMMAND_BUF_SIZE	(HCI_MAX_COMMAND_SIZE * 3)
 
 /*
 * data event:
