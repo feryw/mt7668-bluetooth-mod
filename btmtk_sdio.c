@@ -1997,11 +1997,34 @@ cmd_type:
  {
          struct sdio_func *func = dev_to_sdio_func(dev);
          u8 ret = 0;
-
+         mmc_pm_flag_t pm_flags;
          ret = btmtk_sdio_set_own_back(DRIVER_OWN);
+         if(ret)
+             BTMTK_ERR("%s set driver own fail",__func__);
+
          ret = btmtk_sdio_send_woble_cmd();
+         if(ret)
+             BTMTK_ERR("%s set woble cmd fail",__func__);
+
+
          need_reset_stack = 1;
          BTMTK_ERR("%s set reset_stack 1\n", __func__);
+         if (func) {
+                 pm_flags = sdio_get_host_pm_caps(func);
+                 BTMTK_DBG("%s: suspend: PM flags = 0x%x", sdio_func_id(func),
+                        pm_flags);
+                 if (!(pm_flags & MMC_PM_KEEP_POWER)) {
+                         BTMTK_ERR("%s: cannot remain alive while suspended",
+                                sdio_func_id(func));
+                         return -EINVAL;
+                 }
+         } else {
+                 BTMTK_ERR("sdio_func is not specified");
+                 return 0;
+         }
+         ret = btmtk_sdio_set_own_back(FW_OWN);
+         if(ret)
+             BTMTK_ERR("%s set fw own fail",__func__);
          return sdio_set_host_pm_flags(func, MMC_PM_KEEP_POWER);
  }
 

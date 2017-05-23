@@ -19,7 +19,7 @@
  *
  **/
 
-#define VERSION "v0.0.0.24"
+#define VERSION "v0.0.0.25"
 
 #define SDIO_HEADER_LEN                 4
 
