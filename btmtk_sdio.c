@@ -1721,7 +1721,10 @@ static int btmtk_sdio_host_to_card(struct btmtk_private *priv,
         int i = 0;
         u8 MultiBluckCount = 0;
         u8 redundant = 0;
-
+        if (payload != txbuf){
+            memset(txbuf,0,MTK_TXDATA_SIZE);
+            memcpy(txbuf,payload,nb);
+        }
 
         if (!card || !card->func) {
                 BTMTK_ERR("card or function is NULL!");
@@ -1961,31 +1964,31 @@ cmd_type:
  {
         u8 ret = 0;
         u32 sdio_header_len = 0;
-
         u8 *send_data = NULL;
-
+        u32 send_data_len = cmd_len + BTM_HEADER_LEN;
         if(cmd_len==0){
                 BTMTK_ERR("%s cmd_len (%d) error return\n", __func__,cmd_len);
                 return -EINVAL;
         }
 
-        send_data = kmalloc(cmd_len+BTM_HEADER_LEN, GFP_KERNEL);
-        sdio_header_len = cmd_len + BTM_HEADER_LEN;
-        memset(send_data, 0, cmd_len+BTM_HEADER_LEN);
+        send_data = kmalloc(send_data_len, GFP_KERNEL);
+        sdio_header_len = send_data_len;
+        memset(send_data, 0, send_data_len);
         send_data[0] = (sdio_header_len & 0x0000ff);
         send_data[1] = (sdio_header_len & 0x00ff00) >> 8;
         send_data[2] = 0;
         send_data[3] = 0;
         send_data[4] = cmd_type ;
         memcpy(&send_data[BTM_HEADER_LEN], &cmd[0], cmd_len);
-        ret = btmtk_sdio_host_to_card(g_priv, send_data, sdio_header_len);
+
+        ret = btmtk_sdio_host_to_card(g_priv, send_data, send_data_len);
         kfree(send_data);
         return ret;
  }
  static int btmtk_sdio_send_woble_cmd(void)
  {
         u8 ret = 0;
-        u8 cmd[] = { 0xC9, 0xFC, 0x0D, 0x01, 0x0E, 0x01, 0x05, 0x43,
+        u8 cmd[] = { 0xC9, 0xFC, 0x0D, 0x01, 0x0E, 0x00, 0x05, 0x43,
                      0x52, 0x4B, 0x54, 0x4D, 0x20, 0x04, 0x32, 0x00 };
 
         ret = btmtk_sdio_send_cmd(HCI_COMMAND_PKT,cmd,sizeof(cmd));
