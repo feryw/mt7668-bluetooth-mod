@@ -361,7 +361,10 @@ int btmtk_remove_card(struct btmtk_private *priv)
 
 
         BTMTK_INFO("%s stop main_thread\n", __func__);
-        kthread_stop(priv->main_thread.task);
+
+        if(!PTR_ERR(priv->main_thread.task))
+            kthread_stop(priv->main_thread.task);
+
         BTMTK_INFO("%s stop main_thread done\n", __func__);
 #ifdef CONFIG_DEBUG_FS
         /*btmtk_debugfs_remove(hdev);*/

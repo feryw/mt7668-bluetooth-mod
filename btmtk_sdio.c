@@ -1457,7 +1457,7 @@ static int btmtk_sdio_process_int_status(struct btmtk_private *priv)
         ret = btmtk_sdio_readl(CHISR, &u32ReadCRValue);
         BTMTK_DBG("%s check TX_EMPTY CHISR 0x%08x\n", __func__, u32ReadCRValue);
         if (TX_EMPTY&u32ReadCRValue) {
-            ret = btmtk_sdio_writel(CHISR, TX_EMPTY);
+            ret = btmtk_sdio_writel(CHISR, (TX_EMPTY | TX_COMPLETE_COUNT));
             priv->btmtk_dev.tx_dnld_rdy = true;
             BTMTK_DBG("%s set tx_dnld_rdy 1\n", __func__);
         }
