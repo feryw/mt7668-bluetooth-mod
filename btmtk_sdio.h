@@ -1,15 +1,14 @@
-/**
+/*
  * Mediatek BT-over-SDIO driver: SDIO interface related definitions
  *
- * Copyright (C) 2015, Mediatek International Ltd.
+ * Copyright (C) 2017, Mediatek International Ltd.
  *
  * This software file (the "File") is distributed by Mediatek International
  * Ltd. under the terms of the GNU General Public License Version 2, June 1991
  * (the "License").  You may use, redistribute and/or modify this File in
  * accordance with the terms and conditions of the License, a copy of which
  * is available by writing to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA or on the
- * worldwide web at http://www.gnu.org/licenses/old-licenses/gpl-2.0.txt.
+ * On the worldwide web at http://www.gnu.org/licenses/old-licenses/gpl-2.0.txt.
  *
  *
  * THE FILE IS DISTRIBUTED AS-IS, WITHOUT WARRANTY OF ANY KIND, AND THE
@@ -17,9 +16,12 @@
  * ARE EXPRESSLY DISCLAIMED.  The License provides additional details about
  * this warranty disclaimer.
  *
- **/
+ */
 
-#define VERSION "v0.0.0.27"
+#ifndef _BTMTK_SDIO_H_
+#define _BTMTK_SDIO_H_
+
+#define VERSION "v0.0.0.28"
 
 #define SDIO_HEADER_LEN                 4
 
@@ -41,12 +43,12 @@
 #define MRVDRV_SIZE_OF_CMD_BUFFER       (2 * 1024)
 
 #define MRVDRV_BT_RX_PACKET_BUFFER_SIZE \
-        (HCI_MAX_FRAME_SIZE + FW_EXTRA_LEN)
+					(HCI_MAX_FRAME_SIZE + FW_EXTRA_LEN)
 
 #define ALLOC_BUF_SIZE  (((max_t (int, MRVDRV_BT_RX_PACKET_BUFFER_SIZE, \
-                        MRVDRV_SIZE_OF_CMD_BUFFER) + SDIO_HEADER_LEN \
-                        + SDIO_BLOCK_SIZE - 1) / SDIO_BLOCK_SIZE) \
-                        * SDIO_BLOCK_SIZE)
+				MRVDRV_SIZE_OF_CMD_BUFFER) + SDIO_HEADER_LEN \
+				+ SDIO_BLOCK_SIZE - 1) / SDIO_BLOCK_SIZE) \
+				* SDIO_BLOCK_SIZE)
 
 /* The number of times to try when polling for status */
 #define MAX_POLL_TRIES                  100
@@ -73,82 +75,83 @@
 
 #if CFG_THREE_IN_ONE_FIRMWARE
 #define BUILD_SIGN(ch0, ch1, ch2, ch3) \
-                    ((unsigned int)(unsigned char)(ch0) | ((unsigned int)(unsigned char)(ch1) << 8) |    \
-                    ((unsigned int)(unsigned char)(ch2) << 16) | ((unsigned int)(unsigned char)(ch3) << 24))
+		((unsigned int)(unsigned char)(ch0) | \
+		((unsigned int)(unsigned char)(ch1) << 8) | \
+		((unsigned int)(unsigned char)(ch2) << 16) | \
+		((unsigned int)(unsigned char)(ch3) << 24))
 
 #define MTK_WIFI_SIGNATURE BUILD_SIGN('M', 'T', 'K', 'W')
 #define FW_TYPE_PATCH   2
-typedef struct _FW_SECTION_T {
-        unsigned int u4FwType;
-        unsigned int u4Offset;
-        unsigned int u4Length;
-} FW_SECTION_T, *P_FW_SECTION_T;
+struct _FW_SECTION_T {
+	unsigned int u4FwType;
+	unsigned int u4Offset;
+	unsigned int u4Length;
+};
 
-typedef struct _FIRMWARE_HEADER_T {
-        unsigned int u4Signature;
-        unsigned int u4CRC;
-        unsigned int u4NumOfEntries;
-        unsigned int u4Reserved;
-        FW_SECTION_T arSection[];
-} FIRMWARE_HEADER_T, *P_FIRMWARE_HEADER_T;
+struct _FIRMWARE_HEADER_T {
+	unsigned int u4Signature;
+	unsigned int u4CRC;
+	unsigned int u4NumOfEntries;
+	unsigned int u4Reserved;
+	struct _FW_SECTION_T arSection[];
+};
 #endif
 
 struct btmtk_sdio_card_reg {
-        u8 cfg;
-        u8 host_int_mask;
-        u8 host_intstatus;
-        u8 card_status;
-        u8 sq_read_base_addr_a0;
-        u8 sq_read_base_addr_a1;
-        u8 card_revision;
-        u8 card_fw_status0;
-        u8 card_fw_status1;
-        u8 card_rx_len;
-        u8 card_rx_unit;
-        u8 io_port_0;
-        u8 io_port_1;
-        u8 io_port_2;
-        bool int_read_to_clear;
-        u8 host_int_rsr;
-        u8 card_misc_cfg;
-        u8 fw_dump_ctrl;
-        u8 fw_dump_start;
-        u8 fw_dump_end;
-    u8 func_num;
+	u8 cfg;
+	u8 host_int_mask;
+	u8 host_intstatus;
+	u8 card_status;
+	u8 sq_read_base_addr_a0;
+	u8 sq_read_base_addr_a1;
+	u8 card_revision;
+	u8 card_fw_status0;
+	u8 card_fw_status1;
+	u8 card_rx_len;
+	u8 card_rx_unit;
+	u8 io_port_0;
+	u8 io_port_1;
+	u8 io_port_2;
+	bool int_read_to_clear;
+	u8 host_int_rsr;
+	u8 card_misc_cfg;
+	u8 fw_dump_ctrl;
+	u8 fw_dump_start;
+	u8 fw_dump_end;
+	u8 func_num;
 };
 
 struct btmtk_sdio_card {
-        struct sdio_func *func;
-        u32 ioport;
-        const char *helper;
-        const char *firmware;
-        const char *firmware1;
-        const struct btmtk_sdio_card_reg *reg;
-        bool support_pscan_win_report;
-        bool supports_fw_dump;
-        u16 sd_blksz_fw_dl;
-        u8 rx_unit;
-        struct btmtk_private *priv;
+	struct sdio_func *func;
+	u32 ioport;
+	const char *helper;
+	const char *firmware;
+	const char *firmware1;
+	const struct btmtk_sdio_card_reg *reg;
+	bool support_pscan_win_report;
+	bool supports_fw_dump;
+	u16 sd_blksz_fw_dl;
+	u8 rx_unit;
+	struct btmtk_private *priv;
 };
-
 struct btmtk_sdio_device {
-        const char *helper;
-        const char *firmware;
-        const char *firmware1;
-        const struct btmtk_sdio_card_reg *reg;
-        const bool support_pscan_win_report;
-        u16 sd_blksz_fw_dl;
-        bool supports_fw_dump;
+	const char *helper;
+	const char *firmware;
+	const char *firmware1;
+	const struct btmtk_sdio_card_reg *reg;
+	const bool support_pscan_win_report;
+	u16 sd_blksz_fw_dl;
+	bool supports_fw_dump;
 };
 #pragma pack(1)
-typedef struct _PATCH_HEADER {
-    u8 ucDateTime[16];
-    u8 ucPlatform[4];
-    u16 u2HwVer;
-    u16 u2SwVer;
-    u32 u4PatchVer;
-    u16 u2PatchStartAddr;/*Patch ram start address*/
-} PATCH_HEADER, *P_PATCH_HEADER;
+struct _PATCH_HEADER {
+	u8 ucDateTime[16];
+	u8 ucPlatform[4];
+	u16 u2HwVer;
+	u16 u2SwVer;
+	u32 u4PatchVer;
+	u16 u2PatchStartAddr;/*Patch ram start address*/
+};
 #pragma pack()
 
 #define HW_VERSION 0x80000000
@@ -225,16 +228,20 @@ typedef struct _PATCH_HEADER {
 
 /* Macros for Data Alignment : size */
 #define ALIGN_SZ(p, a)  \
-        (((p) + ((a) - 1)) & ~((a) - 1))
+		(((p) + ((a) - 1)) & ~((a) - 1))
 
 /* Macros for Data Alignment : address */
 #define ALIGN_ADDR(p, a)        \
-        ((((unsigned long)(p)) + (((unsigned long)(a)) - 1)) & \
-                                        ~(((unsigned long)(a)) - 1))
+		((((unsigned long)(p)) + (((unsigned long)(a)) - 1)) & \
+		~(((unsigned long)(a)) - 1))
 struct sk_buff *btmtk_create_send_data(struct sk_buff *skb);
 int btmtk_print_buffer_conent(u8 *buf, u32 Datalen);
-u32 lock_unsleepable_lock(P_OSAL_UNSLEEPABLE_LOCK pUSL);
-u32 unlock_unsleepable_lock(P_OSAL_UNSLEEPABLE_LOCK pUSL);
+u32 lock_unsleepable_lock(struct _OSAL_UNSLEEPABLE_LOCK_ *pUSL);
+u32 unlock_unsleepable_lock(struct _OSAL_UNSLEEPABLE_LOCK_ *pUSL);
 
 extern unsigned char probe_counter;
 extern unsigned char *txbuf;
+extern u8 probe_ready;
+
+#endif
+
