@@ -40,6 +40,16 @@
 /* Time to wait for command response in millisecond */
 #define WAIT_UNTIL_CMD_RESP             msecs_to_jiffies(5000)
 
+#define BTMTK_BIN_FILE_MODE 1
+#if BTMTK_BIN_FILE_MODE
+/** For 7668 please storage cfg/bin file in ${firmware} */
+#define E2P_ACCESS_MODE_SWITCHER_7668	"bt.cfg"
+#define E2P_BIN_FILE_7668		"EEPROM_MT7668_BT.bin"
+
+#define E2P_MODE	"E2pAccessMode"
+#define BIN_FILE_MODE	'4'
+#endif
+
 enum rdwr_status {
 	RDWR_STATUS_SUCCESS = 0,
 	RDWR_STATUS_FAILURE = 1,

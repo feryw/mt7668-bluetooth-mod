@@ -21,7 +21,7 @@
 #ifndef _BTMTK_SDIO_H_
 #define _BTMTK_SDIO_H_
 
-#define VERSION "v0.0.0.28"
+#define VERSION "v0.0.0.30"
 
 #define SDIO_HEADER_LEN                 4
 
@@ -211,17 +211,17 @@ struct _PATCH_HEADER {
 #define HCI_MAX_COMMAND_BUF_SIZE	(HCI_MAX_COMMAND_SIZE * 3)
 
 /*
-* data event:
-* return
-* 0:
-* patch download is not complete/get patch semaphore fail
-* 1:
-* patch download is complete by others
-* 2
-* patch download is not coplete
-* 3:(for debug)
-* release patch semaphore success
-*/
+ * data event:
+ * return
+ * 0:
+ * patch download is not complete/get patch semaphore fail
+ * 1:
+ * patch download is complete by others
+ * 2
+ * patch download is not coplete
+ * 3:(for debug)
+ * release patch semaphore success
+ */
 
 /* Platform specific DMA alignment */
 #define BTSDIO_DMA_ALIGN                8
