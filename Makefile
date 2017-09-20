@@ -1,5 +1,11 @@
 export KERNEL_SRC := /lib/modules/$(shell uname -r)/build
 
+ifeq ($(PLATFORM),MT8516_YOCTO)
+$(warning LINUX_SRC=$(LINUX_SRC))
+endif
+
+$(warning $(PLATFORM))
+$(warning $(CC))
 ###############################################################################
 # USB
 ###############################################################################
@@ -13,7 +19,6 @@ $(USB_MOD_NAME)-objs := $(USB_CFILES:.c=.o)
 ###############################################################################
 # SDIO
 ###############################################################################
-VPATH = /opt/toolchains/gcc-linaro-aarch64-linux-gnu-4.9-2014.09_linux
 SDIO_MOD_NAME = btmtksdio
 SDIO_CFILES := \
 	btmtk_sdio.c btmtk_main.c
@@ -22,7 +27,12 @@ $(SDIO_MOD_NAME)-objs := $(SDIO_CFILES:.c=.o)
 ###############################################################################
 # Common
 ###############################################################################
+ifeq ($(PLATFORM),MT8516_YOCTO)
+obj-m := $(SDIO_MOD_NAME).o
+else
+
 obj-m := $(USB_MOD_NAME).o $(SDIO_MOD_NAME).o
+endif
 
 all:
 	make -C $(KERNEL_SRC) M=$(PWD) modules
@@ -31,8 +41,11 @@ usb:
 	make -C $(KERNEL_SRC) M=$(PWD) $(USB_MOD_NAME).ko
 
 sdio:
-	#make -C $(KERNEL_SRC) M=$(PWD) $(SDIO_MOD_NAME).ko
-	make -C /Projects/ZTE/linux M=$(PWD) modules ARCH=arm64 CROSS_COMPILE=/opt/toolchains/gcc-linaro-aarch64-linux-gnu-4.9-2014.09_linux/bin/aarch64-linux-gnu-
+ifeq ($(PLATFORM),MT8516_YOCTO)
+	make -C $(LINUX_SRC) M=$(PWD) $(SDIO_MOD_NAME).ko
+else
+	make -C $(KERNEL_SRC) M=$(PWD) $(SDIO_MOD_NAME).ko
+endif
 
 clean:
 	make -C $(KERNEL_SRC) M=$(PWD) clean
