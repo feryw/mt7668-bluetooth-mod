@@ -39,6 +39,12 @@
 
 #include "btmtk_drv.h"
 #include "btmtk_sdio.h"
+#ifdef BT_SUPPORT_PMU_EN_CTRL
+#include "mt7668_wmt.h"
+#endif
+#ifdef BT_DRIVER_BUILD_MODULE
+void sdio_card_detect(int card_present);
+#endif
 
 static dev_t g_devIDfwlog;
 static struct class *pBTClass;
@@ -3080,6 +3086,17 @@ static int __init btmtk_sdio_init_module(void)
 		pr_notice("SDIO Driver Registration Failed\n");
 		return -ENODEV;
 	}
+#ifdef BT_SUPPORT_PMU_EN_CTRL
+    /* Pull PMU_EN to high */
+    if (!cnnPmuStatusGet()) {
+        cnnPmuPullUp();
+    }
+#endif
+
+#ifdef BT_DRIVER_BUILD_MODULE
+    /* Trigger SDIO BUS Rescan in ko module  */
+    sdio_card_detect(1);
+#endif
 
 	pr_info("SDIO Driver Registration Success\n");
 
