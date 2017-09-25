@@ -4,7 +4,6 @@ ifeq ($(PLATFORM),MT8516_YOCTO)
 $(warning LINUX_SRC=$(LINUX_SRC))
 endif
 
-$(warning $(PLATFORM))
 $(warning $(CC))
 ###############################################################################
 # USB
@@ -30,7 +29,6 @@ $(SDIO_MOD_NAME)-objs := $(SDIO_CFILES:.c=.o)
 ifeq ($(PLATFORM),MT8516_YOCTO)
 obj-m := $(SDIO_MOD_NAME).o
 else
-
 obj-m := $(USB_MOD_NAME).o $(SDIO_MOD_NAME).o
 endif
 
@@ -42,7 +40,7 @@ usb:
 
 sdio:
 ifeq ($(PLATFORM),MT8516_YOCTO)
-	make -C $(LINUX_SRC) M=$(PWD) $(SDIO_MOD_NAME).ko
+	make -C $(LINUX_SRC) M=$(PWD) modules
 else
 	make -C $(KERNEL_SRC) M=$(PWD) $(SDIO_MOD_NAME).ko
 endif
