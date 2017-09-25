@@ -44,7 +44,7 @@
 #if BTMTK_BIN_FILE_MODE
 /** For 7668 please storage cfg/bin file in ${firmware} */
 #define E2P_ACCESS_MODE_SWITCHER_7668	"bt.cfg"
-#define E2P_BIN_FILE_7668		"EEPROM_MT7668_BT.bin"
+#define E2P_BIN_FILE_7668		"EEPROM_MT7668.bin"
 
 #define E2P_MODE	"E2pAccessMode"
 #define BIN_FILE_MODE	'4'
