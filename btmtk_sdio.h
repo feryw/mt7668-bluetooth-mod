@@ -21,7 +21,7 @@
 #ifndef _BTMTK_SDIO_H_
 #define _BTMTK_SDIO_H_
 
-#define VERSION "v0.0.0.30"
+#define VERSION "v0.0.0.32"
 
 #define SDIO_HEADER_LEN                 4
 

@@ -53,7 +53,7 @@ int btmtk_enable_hs(struct btmtk_private *priv)
 			adapter->hs_state,
 			msecs_to_jiffies(WAIT_UNTIL_HS_STATE_CHANGED));
 	if (ret < 0) {
-		pr_notice("event_hs_wait_q terminated (%d): %d,%d,%d\n",
+		pr_err("event_hs_wait_q terminated (%d): %d,%d,%d\n",
 			ret, adapter->hs_state, adapter->ps_state,
 			adapter->wakeup_tries);
 
@@ -75,17 +75,17 @@ static int btmtk_tx_pkt(struct btmtk_private *priv, struct sk_buff *skb)
 	pr_debug("%s skb->len %d\n", __func__, skb->len);
 
 	if (!skb) {
-		pr_notice("%s skb is NULL return -EINVAL\n", __func__);
+		pr_warn("%s skb is NULL return -EINVAL\n", __func__);
 		return -EINVAL;
 	}
 
 	if (!skb->data) {
-		pr_notice("%s skb->data is NULL return -EINVAL\n", __func__);
+		pr_warn("%s skb->data is NULL return -EINVAL\n", __func__);
 		return -EINVAL;
 	}
 
 	if (!skb->len || ((skb->len + BTM_HEADER_LEN) > BTM_UPLD_SIZE)) {
-		pr_notice("Tx Error: Bad skb length %d : %d\n",
+		pr_warn("Tx Error: Bad skb length %d : %d\n",
 						skb->len, BTM_UPLD_SIZE);
 		return -EINVAL;
 	}
@@ -117,7 +117,7 @@ static void btmtk_init_adapter(struct btmtk_private *priv)
 	priv->adapter->hw_regs_buf = kzalloc(buf_size, GFP_KERNEL);
 	if (!priv->adapter->hw_regs_buf) {
 		priv->adapter->hw_regs = NULL;
-		pr_notice("Unable to allocate buffer for hw_regs.\n");
+		pr_err("Unable to allocate buffer for hw_regs.\n");
 	} else {
 		priv->adapter->hw_regs =
 			(u8 *)ALIGN_ADDR(priv->adapter->hw_regs_buf,
@@ -173,7 +173,7 @@ static int btmtk_service_main_thread(void *data)
 		usleep_range(10*1000, 15*1000);
 
 		if (i == 1000) {
-			pr_notice("%s probe_ready %d i = %d try too many times return\n",
+			pr_warn("%s probe_ready %d i = %d try too many times return\n",
 				__func__, probe_ready, i);
 			return 0;
 		}
@@ -182,7 +182,7 @@ static int btmtk_service_main_thread(void *data)
 	if (priv->adapter)
 		adapter = priv->adapter;
 	else {
-		pr_notice("%s priv->adapter is NULL return\n", __func__);
+		pr_err("%s priv->adapter is NULL return\n", __func__);
 		return 0;
 	}
 
@@ -191,7 +191,7 @@ static int btmtk_service_main_thread(void *data)
 		add_wait_queue(&thread->wait_q, &wait);
 		set_current_state(TASK_INTERRUPTIBLE);
 		if (kthread_should_stop()) {
-			pr_notice("main_thread: break from main thread\n");
+			pr_warn("main_thread: break from main thread\n");
 			break;
 		}
 
@@ -208,13 +208,13 @@ static int btmtk_service_main_thread(void *data)
 		remove_wait_queue(&thread->wait_q, &wait);
 
 		if (kthread_should_stop()) {
-			pr_notice("main_thread: break after wake up\n");
+			pr_warn("main_thread: break after wake up\n");
 			break;
 		}
 
 		ret = priv->hw_set_own_back(DRIVER_OWN);
 		if (ret) {
-			pr_notice("%s set driver own return fail\n", __func__);
+			pr_err("%s set driver own return fail\n", __func__);
 			break;
 		}
 
@@ -269,7 +269,7 @@ static int btmtk_service_main_thread(void *data)
 		if (skb_queue_empty(&adapter->tx_queue)) {
 			ret = priv->hw_set_own_back(FW_OWN);
 			if (ret) {
-				pr_notice("%s set fw own return fail\n",
+				pr_err("%s set fw own return fail\n",
 					__func__);
 				break;
 			}
