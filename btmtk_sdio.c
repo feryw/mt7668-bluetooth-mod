@@ -2397,12 +2397,12 @@ static int btmtk_sdio_suspend(struct device *dev)
 	pr_notice("%s set reset_stack 1\n", __func__);
 	if (func) {
 		pm_flags = sdio_get_host_pm_caps(func);
-		pr_debug("%s: suspend: PM flags = 0x%x\n",
+		pr_notice("%s: suspend: PM flags = 0x%x\n",
 			sdio_func_id(func), pm_flags);
 		if (!(pm_flags & MMC_PM_KEEP_POWER)) {
 			pr_notice("%s: cannot remain alive while suspended\n",
 				sdio_func_id(func));
-			return -EINVAL;
+			//return -EINVAL;
 		}
 	} else {
 		pr_notice("sdio_func is not specified\n");
@@ -2411,7 +2411,8 @@ static int btmtk_sdio_suspend(struct device *dev)
 	ret = btmtk_sdio_set_own_back(FW_OWN);
 	if (ret)
 		pr_notice("%s set fw own fail\n", __func__);
-	return sdio_set_host_pm_flags(func, MMC_PM_KEEP_POWER);
+        pr_notice("%s return 0 directly\n", __func__);
+	return 0;//sdio_set_host_pm_flags(func, MMC_PM_KEEP_POWER);
 }
 
 static int btmtk_sdio_resume(struct device *dev)
