@@ -2424,16 +2424,13 @@ static int btmtk_sdio_suspend(struct device *dev)
 		if (!(pm_flags & MMC_PM_KEEP_POWER)) {
 			pr_err("%s: cannot remain alive while suspended\n",
 				sdio_func_id(func));
-			return -EINVAL;
+			//return -EINVAL;
 		}
 	} else {
 		pr_err("sdio_func is not specified\n");
 		return 0;
 	}
-	ret = btmtk_sdio_set_own_back(DRIVER_OWN);
-        if (ret)
-	    pr_notice("%s set driver own fail\n", __func__);
-        btmtk_sdio_bt_set_power(0);
+    btmtk_sdio_bt_set_power(0);
 	ret = btmtk_sdio_set_own_back(FW_OWN);
 	if (ret)
 	    pr_err("%s set fw own fail\n", __func__);
