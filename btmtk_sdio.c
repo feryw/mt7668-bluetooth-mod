@@ -975,6 +975,7 @@ static void btmtk_set_eeprom2ctrler(uint8_t *buf,
 			ret < 0 ? "fail" : "OK");
 
 	/* XTAL setting */
+#if 0
 	if (is7668) {
 		offset = 0xF4;
 		/* BT default power */
@@ -987,6 +988,7 @@ static void btmtk_set_eeprom2ctrler(uint8_t *buf,
 				set_xtal[4], set_xtal[5],
 				ret < 0 ? "fail" : "OK");
 	}
+#endif
 }
 
 static void btmtk_eeprom_bin_file(struct btmtk_sdio_card *card)
