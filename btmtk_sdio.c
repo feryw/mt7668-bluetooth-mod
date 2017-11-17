@@ -791,6 +791,38 @@ static int btmtk_sdio_bt_set_power(u8 onoff)
 }
 
 #if BTMTK_BIN_FILE_MODE
+static void GetRandomValue(u8 string[6], bool is7668)
+{
+	int iRandom = 0;
+
+	pr_info("Enable random generation\n");
+
+	/* first random */
+	get_random_bytes(&iRandom, sizeof(int));
+	pr_info("iRandom = [%d]", iRandom);
+	string[0] = (((iRandom>>24|iRandom>>16) & (0xFE)) | (0x02)); /* Must use private bit(1) and no BCMC bit(0) */
+
+	/* second random */
+	get_random_bytes(&iRandom, sizeof(int));
+	pr_info("iRandom = [%d]", iRandom);
+	string[1] = ((iRandom>>8) & 0xFF);
+
+	/* third random */
+	get_random_bytes(&iRandom, sizeof(int));
+	pr_info("iRandom = [%d]", iRandom);
+	string[5] = (iRandom & 0xFF);
+
+	/*  */
+	string[2] = 0x46;
+	if (is7668)
+		string[3] = 0x68;
+	else
+		string[3] = 0x62;
+	string[4] = 0x76;
+
+	return;
+}
+
 static int btmtk_sdio_send_and_check(u8 *cmd, u16 cmd_len,
 						u8 *event, u16 event_len)
 {
@@ -897,6 +929,15 @@ static void btmtk_set_eeprom2ctrler(uint8_t *buf,
 	set_bdaddr[7] = *(buf + offset + 3);
 	set_bdaddr[8] = *(buf + offset + 4);
 	set_bdaddr[9] = *(buf + offset + 5);
+
+	if (0x0 == set_bdaddr[4] ||
+		0x0 == set_bdaddr[5] ||
+		0x0 == set_bdaddr[6] ||
+		0x0 == set_bdaddr[7] ||
+		0x0 == set_bdaddr[8] ||
+		0x0 == set_bdaddr[9]) {
+		GetRandomValue(&set_bdaddr[4], true);
+	}
 	ret = btmtk_sdio_send_and_check(set_bdaddr, sizeof(set_bdaddr),
 					set_bdaddr_e, sizeof(set_bdaddr_e));
 	pr_notice("%s: set BDAddress(%02X-%02X-%02X-%02X-%02X-%02X) %s\n",
