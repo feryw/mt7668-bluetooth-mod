@@ -1,12 +1,5 @@
 export KERNEL_SRC := /lib/modules/$(shell uname -r)/build
 
-ifeq ($(PLATFORM),MT8516_YOCTO)
-$(warning LINUX_SRC=$(LINUX_SRC))
-ccflags-y += -DBT_SUPPORT_PMU_EN_CTRL
-ccflags-y += -DBT_DRIVER_BUILD_MODULE
-ccflags-y += -I$(TOPDIR)/../src/connectivity/combo_tool/mt7668_wmt_drv
-endif
-
 $(warning $(CC))
 ###############################################################################
 # USB
