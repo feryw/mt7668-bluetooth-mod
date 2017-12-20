@@ -1,21 +1,17 @@
 /*
- * Mediatek BT-over-SDIO driver: SDIO interface related functions.
- * Copyright (C) 2017, Mediatek International Ltd.
+ *  Copyright (c) 2016,2017 MediaTek Inc.
  *
- * This software file (the "File") is distributed by Mediatek International
- * Ltd. under the terms of the GNU General Public License Version 2, June 1991
- * (the "License").  You may use, redistribute and/or modify this File in
- * accordance with the terms and conditions of the License, a copy of which
- * is available by writing to the Free Software Foundation, Inc.,
- * On the worldwide web at http://www.gnu.org/licenses/old-licenses/gpl-2.0.txt.
+ *  This program is free software; you can redistribute it and/or modify
+ *  it under the terms of the GNU General Public License version 2 as
+ *  published by the Free Software Foundation.
  *
- *
- * THE FILE IS DISTRIBUTED AS-IS, WITHOUT WARRANTY OF ANY KIND, AND THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE
- * ARE EXPRESSLY DISCLAIMED.  The License provides additional details about
- * this warranty disclaimer.
+ *  This program is distributed in the hope that it will be useful,
+ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+ *  See http://www.gnu.org/licenses/gpl-2.0.html for more details.
  */
 
+#include "btmtk_config.h"
 #include <linux/version.h>
 #include <linux/firmware.h>
 #include <linux/slab.h>
@@ -36,15 +32,9 @@
 #include <linux/kallsyms.h>
 #include <linux/device.h>
 
-
+#include "btmtk_define.h"
 #include "btmtk_drv.h"
 #include "btmtk_sdio.h"
-#ifdef BT_SUPPORT_PMU_EN_CTRL
-#include "mt7668_wmt.h"
-#endif
-#ifdef BT_DRIVER_BUILD_MODULE
-void sdio_card_detect(int card_present);
-#endif
 
 static dev_t g_devIDfwlog;
 static struct class *pBTClass;
@@ -53,6 +43,7 @@ struct device *pBTDevfwlog;
 static wait_queue_head_t inq;
 static wait_queue_head_t fw_log_inq;
 static struct fasync_struct *fasync;
+/*static int btmtk_woble_state = BTMTK_WOBLE_STATE_UNKNOWN;*/
 
 static int need_reset_stack;
 /* The btmtk_sdio_remove() callback function is called
@@ -69,10 +60,6 @@ static int need_reset_stack;
  * is removed, and will be set to TRUE for module removal when
  * module_exit function is called.
  */
-typedef void (*register_sdio_early_suspend) (void (*f) (void));
-typedef void (*register_sdio_late_resume) (void (*f) (void));
-register_sdio_early_suspend register_sdio_early_suspend_func;
-register_sdio_late_resume register_sdio_late_resume_func;
 
 /*============================================================================*/
 /* Callback Functions */
@@ -85,12 +72,23 @@ unsigned char probe_counter;
 unsigned char current_fwdump_file_number;
 struct btmtk_private *g_priv;
 #define STR_COREDUMP_END "coredump end\n\n"
-
+const u8 READ_ADDRESS_EVENT[] = { 0x0e, 0x0a, 0x01, 0x09, 0x10, 0x00 };
 
 static struct ring_buffer metabuffer;
 u8 probe_ready;
 
 static char fw_dump_file_name[FW_DUMP_FILE_NAME_SIZE] = {0};
+static char event_need_compare[EVENT_COMPARE_SIZE] = {0};
+static char event_need_compare_len;
+static char event_compare_status;
+/*add special header in the beginning of even, stack won't recognize these event*/
+static char event_add_spec_header_status;
+
+struct _OSAL_UNSLEEPABLE_LOCK_ event_compare_status_lock;
+struct _OSAL_UNSLEEPABLE_LOCK_ tx_function_lock;
+
+
+
 int fw_dump_buffer_full;
 int fw_dump_total_read_size;
 int fw_dump_total_write_size;
@@ -126,6 +124,7 @@ static const struct btmtk_sdio_card_reg btmtk_reg_6630 = {
 	.io_port_2 = 0x02,
 	.int_read_to_clear = false,
 	.func_num = 2,
+	.chip_id = 0x6630,
 };
 
 static const struct btmtk_sdio_card_reg btmtk_reg_6632 = {
@@ -144,6 +143,7 @@ static const struct btmtk_sdio_card_reg btmtk_reg_6632 = {
 	.io_port_2 = 0x02,
 	.int_read_to_clear = false,
 	.func_num = 2,
+	.chip_id = 0x6632,
 };
 
 static const struct btmtk_sdio_card_reg btmtk_reg_7668 = {
@@ -162,6 +162,7 @@ static const struct btmtk_sdio_card_reg btmtk_reg_7668 = {
 	.io_port_2 = 0x02,
 	.int_read_to_clear = false,
 	.func_num = 2,
+	.chip_id = 0x7668,
 };
 
 static const struct btmtk_sdio_card_reg btmtk_reg_7666 = {
@@ -180,6 +181,7 @@ static const struct btmtk_sdio_card_reg btmtk_reg_7666 = {
 	.io_port_2 = 0x02,
 	.int_read_to_clear = false,
 	.func_num = 2,
+	.chip_id = 0x7666,
 };
 
 static const struct btmtk_sdio_device btmtk_sdio_6630 = {
@@ -253,6 +255,254 @@ static const struct sdio_device_id btmtk_sdio_ids[] = {
 
 MODULE_DEVICE_TABLE(sdio, btmtk_sdio_ids);
 
+
+static void btmtk_sdio_woble_free_setting_struct(struct woble_setting_struct *woble_struct, int count)
+{
+	int i = 0;
+
+	for (i = 0; i < count; i++) {
+		if (woble_struct[i].content) {
+			pr_info("%s:kfree %d", __func__, i);
+			kfree(woble_struct[i].content);
+			woble_struct[i].content = NULL;
+			woble_struct[i].length = 0;
+		} else
+			woble_struct[i].length = 0;
+	}
+}
+
+static void btmtk_sdio_woble_free_setting(void)
+{
+	pr_info("%s begin", __func__);
+	if (g_card == NULL) {
+		pr_err("%s: g_data == NULL", __func__);
+		return;
+	}
+
+	btmtk_sdio_woble_free_setting_struct(g_card->woble_setting_apcf, WOBLE_SETTING_COUNT);
+	btmtk_sdio_woble_free_setting_struct(g_card->woble_setting_apcf_fill_mac, WOBLE_SETTING_COUNT);
+	btmtk_sdio_woble_free_setting_struct(g_card->woble_setting_apcf_fill_mac_location, WOBLE_SETTING_COUNT);
+	btmtk_sdio_woble_free_setting_struct(g_card->woble_setting_radio_off, WOBLE_SETTING_COUNT);
+	btmtk_sdio_woble_free_setting_struct(g_card->woble_setting_radio_off_status_event, WOBLE_SETTING_COUNT);
+	btmtk_sdio_woble_free_setting_struct(g_card->woble_setting_radio_off_comp_event, WOBLE_SETTING_COUNT);
+	btmtk_sdio_woble_free_setting_struct(g_card->woble_setting_radio_on, WOBLE_SETTING_COUNT);
+	btmtk_sdio_woble_free_setting_struct(g_card->woble_setting_radio_on_status_event, WOBLE_SETTING_COUNT);
+	btmtk_sdio_woble_free_setting_struct(g_card->woble_setting_radio_on_comp_event, WOBLE_SETTING_COUNT);
+
+	if (g_card->woble_setting_len) {
+		kfree(g_card->woble_setting);
+		g_card->woble_setting_len = 0;
+		g_card->woble_setting = NULL;
+	}
+	pr_info("%s end", __func__);
+}
+
+static int btmtk_sdio_load_woble_block_setting(char *block_name, struct woble_setting_struct *save_content,
+			int save_content_count, u8 *searchconetnt)
+{
+	int ret = 0;
+	int i = 0;
+	long parsing_result = 0;
+	u8 *search_result = NULL;
+	u8 *search_end = NULL;
+	u8 search[32];
+	u8 temp[128]; /* save for total hex number */
+	u8 *next_number = NULL;
+	u8 *next_block = NULL;
+	u8 number[8];
+	int temp_len;
+
+	memset(search, 0, sizeof(search));
+	memset(temp, 0, sizeof(temp));
+	memset(number, 0, sizeof(number));
+
+	/* search block name */
+	for (i = 0; i < WOBLE_SETTING_COUNT; i++) {
+		temp_len = 0;
+		snprintf(search, sizeof(search), "%s%02d:", block_name, i); /* ex APCF01 */
+		search_result = strstr(searchconetnt, search);
+		if (search_result) {
+			memset(temp, 0, sizeof(temp));
+			temp_len = 0;
+			search_result += strlen(search); /* move to first number */
+
+			do {
+				next_number = NULL;
+				search_end = strstr(search_result, ",");
+				if ((search_end - search_result) <= 0) {
+					pr_info("%s can not find search end, break", __func__);
+					break;
+				}
+
+				if ((search_end - search_result) > sizeof(number))
+					break;
+
+				memset(number, 0, sizeof(number));
+				memcpy(number, search_result, search_end - search_result);
+
+				if (number[0] == 0x20) /* space */
+					ret = kstrtol(number + 1, 0, &parsing_result);
+				else
+					ret = kstrtol(number, 0, &parsing_result);
+
+				if (ret == 0) {
+					if (temp_len >= sizeof(temp)) {
+						pr_err("%s: %s data over %zu", __func__, search, sizeof(temp));
+						break;
+					}
+					temp[temp_len] = parsing_result;
+					temp_len++;
+					/* find next number */
+					next_number = strstr(search_end, "0x");
+
+					/* find next block */
+					next_block = strstr(search_end, ":");
+				} else {
+					pr_debug("%s:kstrtol ret = %d, search %s", __func__, ret, search);
+					break;
+				}
+
+				if (next_number == NULL) {
+					pr_debug("%s: not find next apcf number temp_len %d, break, search %s",
+						__func__, temp_len, search);
+					break;
+				}
+
+				if ((next_number > next_block) && (next_block != 0)) {
+					pr_debug("%s: find next apcf number is over to next block ", __func__);
+					pr_debug("%s: temp_len %d, break, search %s",
+						__func__, temp_len, search);
+					break;
+				}
+
+				search_result = search_end + 1;
+			} while (1);
+		} else
+			pr_debug("%s: %s is not found", __func__, search);
+
+		if (temp_len) {
+			pr_info("%s: %s found", __func__, search);
+			pr_debug("%s: kzalloc i=%d temp_len=%d", __func__, i, temp_len);
+			save_content[i].content = kzalloc(temp_len, GFP_KERNEL);
+			memcpy(save_content[i].content, temp, temp_len);
+			save_content[i].length = temp_len;
+			pr_debug("%s:x  save_content[%d].length %d temp_len=%d",
+				__func__, i, save_content[i].length, temp_len);
+		}
+
+	}
+	return ret;
+}
+
+static int btmtk_sdio_load_woble_setting(u8 *image, char *bin_name,
+					 struct device *dev, u32 *code_len, struct btmtk_sdio_card *data)
+{
+	int err;
+	const struct firmware *fw_entry = NULL;
+
+	pr_info("%s: begin woble_setting_file_name = %s", __func__, bin_name);
+	err = request_firmware(&fw_entry, bin_name, dev);
+	if (err != 0) {
+		kfree(image);
+		image = NULL;
+		pr_err("%s: request_firmware function for woble setting  fail!! error code = %d", __func__, err);
+		return err;
+	}
+
+	if (fw_entry) {
+		image = kzalloc(fw_entry->size + 1, GFP_KERNEL); /* w:move to btmtk_usb_free_memory */
+		pr_info("%s: woble_setting request_firmware size %zu success", __func__, fw_entry->size);
+	} else {
+		pr_err("%s: fw_entry is NULL request_firmware may fail!! error code = %d", __func__, err);
+		return err;
+	}
+	if (image == NULL) {
+		pr_err("%s: kzalloc size %zu failed!!", __func__, fw_entry->size);
+		*code_len = 0;
+		return err;
+	}
+
+	memcpy(image, fw_entry->data, fw_entry->size);
+	image[fw_entry->size] = '\0';
+
+	*code_len = fw_entry->size;
+	pr_info("%s: code_len (%d) assign done", __func__, *code_len);
+
+	err = btmtk_sdio_load_woble_block_setting("APCF",
+			data->woble_setting_apcf, WOBLE_SETTING_COUNT, image);
+	if (err)
+		goto LOAD_END;
+
+	err = btmtk_sdio_load_woble_block_setting("APCF_ADD_MAC",
+			data->woble_setting_apcf_fill_mac, WOBLE_SETTING_COUNT, image);
+	if (err)
+		goto LOAD_END;
+
+	err = btmtk_sdio_load_woble_block_setting("APCF_ADD_MAC_LOCATION",
+			data->woble_setting_apcf_fill_mac_location, WOBLE_SETTING_COUNT, image);
+	if (err)
+		goto LOAD_END;
+
+	err = btmtk_sdio_load_woble_block_setting("RADIOOFF",
+			data->woble_setting_radio_off, WOBLE_SETTING_COUNT, image);
+	if (err)
+		goto LOAD_END;
+
+	err = btmtk_sdio_load_woble_block_setting("RADIOOFF_STATUS_EVENT",
+			data->woble_setting_radio_off_status_event, WOBLE_SETTING_COUNT, image);
+	if (err)
+		goto LOAD_END;
+
+	err = btmtk_sdio_load_woble_block_setting("RADIOOFF_COMPLETE_EVENT",
+			data->woble_setting_radio_off_comp_event, WOBLE_SETTING_COUNT, image);
+	if (err)
+		goto LOAD_END;
+
+	err = btmtk_sdio_load_woble_block_setting("RADIOON",
+			data->woble_setting_radio_on, WOBLE_SETTING_COUNT, image);
+	if (err)
+		goto LOAD_END;
+
+	err = btmtk_sdio_load_woble_block_setting("RADIOON_STATUS_EVENT",
+			data->woble_setting_radio_on_status_event, WOBLE_SETTING_COUNT, image);
+	if (err)
+		goto LOAD_END;
+
+	err = btmtk_sdio_load_woble_block_setting("RADIOON_COMPLETE_EVENT",
+			data->woble_setting_radio_on_comp_event, WOBLE_SETTING_COUNT, image);
+	if (err)
+		goto LOAD_END;
+
+	err = btmtk_sdio_load_woble_block_setting("APCF_RESMUE",
+		data->woble_setting_apcf_resume, WOBLE_SETTING_COUNT, image);
+	if (err)
+		goto LOAD_END;
+
+	err = btmtk_sdio_load_woble_block_setting("APCF_COMPLETE_EVENT",
+			data->woble_setting_apcf_resume, WOBLE_SETTING_COUNT, image);
+
+LOAD_END:
+	if (err)
+		pr_info("%s: error return %d", __func__, err);
+
+	return err;
+}
+
+static inline void btmtk_sdio_woble_wake_lock(struct btmtk_sdio_card *data)
+{
+#if (SUPPORT_UNIFY_WOBLE & SUPPORT_ANDROID)
+	BTUSB_INFO("%s:", __func__);
+	wake_lock(&data->woble_wlock);
+#endif
+}
+
+static inline void btmtk_sdio_woble_wake_unlock(struct btmtk_sdio_card *data)
+{
+#if (SUPPORT_UNIFY_WOBLE & SUPPORT_ANDROID)
+	BTUSB_INFO("%s:", __func__);
+	wake_unlock(&data->woble_wlock);
+#endif
+}
 
 u32 lock_unsleepable_lock(struct _OSAL_UNSLEEPABLE_LOCK_ *pUSL)
 {
@@ -776,7 +1026,7 @@ static int btmtk_sdio_bt_set_power(u8 onoff)
 			pr_warn("%s: retry over 2s, retrytime %d\n",
 				__func__, retrytime);
 
-		pr_info("%s: retrytime %d\n", __func__, retrytime);
+		pr_debug("%s: retrytime %d\n", __func__, retrytime);
 	} while (!rxbuf[0]);
 
 
@@ -791,38 +1041,6 @@ static int btmtk_sdio_bt_set_power(u8 onoff)
 }
 
 #if BTMTK_BIN_FILE_MODE
-static void GetRandomValue(u8 string[6], bool is7668)
-{
-	int iRandom = 0;
-
-	pr_info("Enable random generation\n");
-
-	/* first random */
-	get_random_bytes(&iRandom, sizeof(int));
-	pr_info("iRandom = [%d]", iRandom);
-	string[0] = (((iRandom>>24|iRandom>>16) & (0xFE)) | (0x02)); /* Must use private bit(1) and no BCMC bit(0) */
-
-	/* second random */
-	get_random_bytes(&iRandom, sizeof(int));
-	pr_info("iRandom = [%d]", iRandom);
-	string[1] = ((iRandom>>8) & 0xFF);
-
-	/* third random */
-	get_random_bytes(&iRandom, sizeof(int));
-	pr_info("iRandom = [%d]", iRandom);
-	string[5] = (iRandom & 0xFF);
-
-	/*  */
-	string[2] = 0x46;
-	if (is7668)
-		string[3] = 0x68;
-	else
-		string[3] = 0x62;
-	string[4] = 0x76;
-
-	return;
-}
-
 static int btmtk_sdio_send_and_check(u8 *cmd, u16 cmd_len,
 						u8 *event, u16 event_len)
 {
@@ -864,25 +1082,59 @@ static int btmtk_sdio_send_and_check(u8 *cmd, u16 cmd_len,
 	return ret;
 }
 
-static bool btmtk_is_bin_file_mode(uint8_t *buf)
+static bool btmtk_is_bin_file_mode(uint8_t *buf, size_t buf_size)
 {
-	char *ptr = NULL;
+	char *p_buf = NULL;
+	char *ptr = NULL, *p = NULL;
+	bool ret = true;
+
+	if (!buf) {
+		pr_warn("%s: buf is null\n", __func__);
+		return false;
+	} else if (buf_size < (strlen(E2P_MODE) + 2)) {
+		pr_warn("%s: incorrect buf size(%d)\n",
+			__func__, (int)buf_size);
+		return false;
+	}
+
+	p_buf = kmalloc(buf_size + 1, GFP_KERNEL);
+	if (!p_buf) {
+		pr_warn("%s: alloc p_buf failed\n", __func__);
+		return false;
+	}
+	memcpy(p_buf, buf, buf_size);
+	p_buf[buf_size] = '\0';
 
 	/* find string */
-	ptr = strstr(buf, E2P_MODE);
+	p = ptr = strstr(p_buf, E2P_MODE);
 	if (!ptr) {
 		pr_notice("%s: Can't find %s\n", __func__, E2P_MODE);
-		return false;
+		ret = false;
+		goto out;
+	}
+
+	if (p > p_buf) {
+		p--;
+		while ((*p == ' ') && (p != p_buf))
+			p--;
+		if (*p == '#') {
+			pr_notice("%s: It's not EEPROM - Bin file mode\n", __func__);
+			ret = false;
+			goto out;
+		}
 	}
 
 	/* check access mode */
 	ptr += (strlen(E2P_MODE) + 1);
-	pr_notice("%s: MODE: %c\n", __func__, *ptr);
 	if (*ptr != BIN_FILE_MODE) {
-		pr_notice("%s: It's not EEPROM - Bin file mode\n", __func__);
-		return false;
+		pr_notice("%s: It's not EEPROM - Bin file mode, mode: %c\n", __func__, *ptr);
+		ret = false;
+		goto out;
 	}
-	return true;
+
+out:
+	kfree(p_buf);
+	return ret;
 }
 
 static void btmtk_set_eeprom2ctrler(uint8_t *buf,
@@ -929,15 +1181,6 @@ static void btmtk_set_eeprom2ctrler(uint8_t *buf,
 	set_bdaddr[7] = *(buf + offset + 3);
 	set_bdaddr[8] = *(buf + offset + 4);
 	set_bdaddr[9] = *(buf + offset + 5);
-
-	if (0x0 == set_bdaddr[4] ||
-		0x0 == set_bdaddr[5] ||
-		0x0 == set_bdaddr[6] ||
-		0x0 == set_bdaddr[7] ||
-		0x0 == set_bdaddr[8] ||
-		0x0 == set_bdaddr[9]) {
-		GetRandomValue(&set_bdaddr[4], true);
-	}
 	ret = btmtk_sdio_send_and_check(set_bdaddr, sizeof(set_bdaddr),
 					set_bdaddr_e, sizeof(set_bdaddr_e));
 	pr_notice("%s: set BDAddress(%02X-%02X-%02X-%02X-%02X-%02X) %s\n",
@@ -1016,7 +1259,6 @@ static void btmtk_set_eeprom2ctrler(uint8_t *buf,
 			ret < 0 ? "fail" : "OK");
 
 	/* XTAL setting */
-#if 0
 	if (is7668) {
 		offset = 0xF4;
 		/* BT default power */
@@ -1029,58 +1271,54 @@ static void btmtk_set_eeprom2ctrler(uint8_t *buf,
 				set_xtal[4], set_xtal[5],
 				ret < 0 ? "fail" : "OK");
 	}
-#endif
 }
 
 static void btmtk_eeprom_bin_file(struct btmtk_sdio_card *card)
 {
 	char *cfg_file = NULL;
-	char *bin_file = NULL;
-	/* 7668 series */
+	char bin_file[32];
+
 	const struct firmware *cfg_fw = NULL;
 	const struct firmware *bin_fw = NULL;
 
-	/* For 76x8T series */
-	{
-		int ret = -1;
+	int ret = -1;
+	int chipid = card->func->device;
 
-		pr_notice("%s: 7668 series\n", __func__);
-		cfg_file = E2P_ACCESS_MODE_SWITCHER_7668;
-		bin_file = E2P_BIN_FILE_7668;
+	pr_notice("%s: %X series\n", __func__, chipid);
+	cfg_file = E2P_ACCESS_MODE_SWITCHER;
+	sprintf(bin_file, E2P_BIN_FILE, chipid);
 
-		usleep_range(10*1000, 15*1000);
+	usleep_range(10*1000, 15*1000);
 
-		/* request configure file */
-		ret = request_firmware(&cfg_fw, cfg_file, &card->func->dev);
-		if (ret < 0) {
-			if (ret == -ENOENT)
-				pr_notice("%s: Configure file not found, ignore EEPROM bin file\n",
-					__func__);
-			else
-				pr_notice("%s: request configure file fail(%d)\n",
-					__func__, ret);
-			return;
-		}
-
-		if (btmtk_is_bin_file_mode((uint8_t *)cfg_fw->data) == false)
-			goto exit2;
-
-		usleep_range(10*1000, 15*1000);
-
-		/* open bin file for EEPROM */
-		ret = request_firmware(&bin_fw, bin_file, &card->func->dev);
-		if (ret < 0) {
-			pr_notice("%s: request bin file fail(%d)\n",
+	/* request configure file */
+	ret = request_firmware(&cfg_fw, cfg_file, &card->func->dev);
+	if (ret < 0) {
+		if (ret == -ENOENT)
+			pr_notice("%s: Configure file not found, ignore EEPROM bin file\n",
+				__func__);
+		else
+			pr_notice("%s: request configure file fail(%d)\n",
 				__func__, ret);
-			goto exit2;
-		}
+		return;
+	}
 
-		/* set parameters to controller */
-		btmtk_set_eeprom2ctrler((uint8_t *)bin_fw->data,
-					bin_fw->size,
-					true);
+	if (btmtk_is_bin_file_mode((uint8_t *)cfg_fw->data, cfg_fw->size) == false)
+		goto exit2;
+
+	usleep_range(10*1000, 15*1000);
+
+	/* open bin file for EEPROM */
+	ret = request_firmware(&bin_fw, bin_file, &card->func->dev);
+	if (ret < 0) {
+		pr_notice("%s: request bin file fail(%d)\n",
+			__func__, ret);
 		goto exit2;
 	}
+
+	/* set parameters to controller */
+	btmtk_set_eeprom2ctrler((uint8_t *)bin_fw->data,
+				bin_fw->size,
+				(card->func->device == 0x7668 ? true : false));
 
 exit2:
 	if (cfg_fw)
@@ -1121,6 +1359,170 @@ static int btmtk_sdio_set_sleep(void)
 	}
 
 	return ret;
+}
+
+static int btmtk_sdio_host_to_card(struct btmtk_private *priv,
+				u8 *payload, u16 nb)
+{
+	struct btmtk_sdio_card *card = priv->btmtk_dev.card;
+	int ret = 0;
+	int i = 0;
+	u8 MultiBluckCount = 0;
+	u8 redundant = 0;
+
+	//lock_unsleepable_lock(&tx_function_lock);
+
+	if (payload != txbuf) {
+		memset(txbuf, 0, MTK_TXDATA_SIZE);
+		memcpy(txbuf, payload, nb);
+	}
+
+	if (!card || !card->func) {
+		pr_err("card or function is NULL!\n");
+		//unlock_unsleepable_lock(&tx_function_lock);
+		return -EINVAL;
+	}
+
+	MultiBluckCount = nb/SDIO_BLOCK_SIZE;
+	redundant = nb % SDIO_BLOCK_SIZE;
+
+	if (redundant)
+		nb = (MultiBluckCount+1)*SDIO_BLOCK_SIZE;
+
+	if (nb < 16)
+		btmtk_print_buffer_conent(txbuf, nb);
+	else
+		btmtk_print_buffer_conent(txbuf, 16);
+
+	do {
+		/* Transfer data to card */
+		sdio_claim_host(card->func);
+		ret = sdio_writesb(card->func, CTDR, txbuf, nb);
+		sdio_release_host(card->func);
+		if (ret < 0) {
+			i++;
+			pr_err("i=%d writesb failed: %d\n", i, ret);
+			pr_err("hex: %*ph\n", nb, txbuf);
+			ret = -EIO;
+			if (i > MAX_WRITE_IOMEM_RETRY)
+				goto exit;
+		}
+	} while (ret);
+
+	if (priv)
+		priv->btmtk_dev.tx_dnld_rdy = false;
+
+exit:
+
+	//unlock_unsleepable_lock(&tx_function_lock);
+	return ret;
+}
+
+static int btmtk_sdio_set_i2s_slave(void)
+{
+	int ret = 0;
+	u8 wmt_event[7] = { 4, 0xE, 4, 1, 0x72, 0xFC, 0 };
+	u8 cmd[] = { 1, 0x72, 0xFC, 4, 03, 0x10, 0x00, 0x02 };
+	u8 mtksdio_packet_header[MTK_SDIO_PACKET_HEADER_SIZE] = { 0 };
+
+	pr_info("%s\n", __func__);
+	mtksdio_packet_header[0] = sizeof(mtksdio_packet_header) + sizeof(cmd);
+	memcpy(txbuf, mtksdio_packet_header, MTK_SDIO_PACKET_HEADER_SIZE);
+	memcpy(txbuf + MTK_SDIO_PACKET_HEADER_SIZE, cmd, sizeof(cmd));
+	btmtk_sdio_send_tx_data(txbuf, MTK_SDIO_PACKET_HEADER_SIZE + sizeof(cmd));
+
+	btmtk_sdio_recv_rx_data();
+
+	pr_debug("%s rx_length %d\n", __func__, rx_length);
+	pr_debug("%s rx_length %d %02x%02x%02x%02x%02x\%02x%02x%02x%02x%02x%02x%02x\n", __func__,
+		   rx_length, rxbuf[0], rxbuf[1], rxbuf[2], rxbuf[3], rxbuf[4]
+		   , rxbuf[5], rxbuf[6], rxbuf[7], rxbuf[8], rxbuf[9]
+		   , rxbuf[10], rxbuf[11]);
+	/* compare rx data is wmt reset correct response or not */
+	if (memcmp(wmt_event, rxbuf + MTK_SDIO_PACKET_HEADER_SIZE, sizeof(wmt_event)) != 0) {
+		ret = -EIO;
+		pr_err("%s: fail\n", __func__);
+	}
+	return ret;
+}
+
+static int btmtk_sdio_read_pin_mux_setting(u32 *value)
+{
+	int ret = 0;
+	u8 cmd[] = { 1, 0xD1, 0xFC, 4, 0x54, 0x30, 0x02, 0x81 };
+	u8 tempvalue = 0;
+	u8 mtksdio_packet_header[MTK_SDIO_PACKET_HEADER_SIZE] = { 0 };
+
+	pr_info("%s\n", __func__);
+	mtksdio_packet_header[0] = sizeof(mtksdio_packet_header) + sizeof(cmd);
+	memcpy(txbuf, mtksdio_packet_header, MTK_SDIO_PACKET_HEADER_SIZE);
+	memcpy(txbuf + MTK_SDIO_PACKET_HEADER_SIZE, cmd, sizeof(cmd));
+	pr_debug("%s tx buf %02x%02x%02x%02x%02x\%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x\n",
+		   __func__, txbuf[0], txbuf[1], txbuf[2], txbuf[3], txbuf[4]
+		   , txbuf[5], txbuf[6], txbuf[7], txbuf[8], txbuf[9]
+		   , txbuf[10], txbuf[11], txbuf[12], txbuf[13], txbuf[14]);
+	btmtk_sdio_send_tx_data(txbuf, MTK_SDIO_PACKET_HEADER_SIZE + sizeof(cmd));
+
+	btmtk_sdio_recv_rx_data();
+
+	pr_debug("%s rx_length %d\n", __func__, rx_length);
+	pr_debug
+	    ("%s rx_length %d %02x%02x%02x%02x%02x\%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x\n",
+	     __func__, rx_length, rxbuf[0], rxbuf[1], rxbuf[2], rxbuf[3], rxbuf[4]
+	     , rxbuf[5], rxbuf[6], rxbuf[7], rxbuf[8], rxbuf[9]
+	     , rxbuf[10], rxbuf[11], rxbuf[12], rxbuf[13], rxbuf[14]);
+
+	if (rx_length >= 15) {
+		tempvalue = rxbuf[14];
+		*value = (rxbuf[14] << 24) + (rxbuf[13] << 16) + (rxbuf[12] << 8) + rxbuf[11];
+		pr_debug("%s value=%08x\n", __func__, *value);
+	} else
+		ret = -EIO;
+
+	return ret;
+}
+
+static int btmtk_sdio_write_pin_mux_setting(u32 value)
+{
+	int ret = 0;
+	u8 event[7] = { 4, 0xE, 4, 1, 0xD0, 0xFC, 0 };
+	u8 cmd[12] = { 1, 0xD0, 0xFC, 8, 0x54, 0x30, 0x02, 0x81, 0, 0, 0, 0 };
+	u8 mtksdio_packet_header[MTK_SDIO_PACKET_HEADER_SIZE] = { 0 };
+
+	pr_info("%s begin\n", __func__);
+	cmd[8] = (value & 0x000000FF);
+	cmd[9] = ((value & 0x0000FF00) >> 8);
+	cmd[10] = ((value & 0x00FF0000) >> 16);
+	cmd[11] = ((value & 0xFF000000) >> 24);
+
+	pr_debug("%s value=%08x begin\n", __func__, value);
+	mtksdio_packet_header[0] = sizeof(mtksdio_packet_header) + sizeof(cmd);
+	memcpy(txbuf, mtksdio_packet_header, MTK_SDIO_PACKET_HEADER_SIZE);
+	memcpy(txbuf + MTK_SDIO_PACKET_HEADER_SIZE, cmd, sizeof(cmd));
+
+	pr_debug("%s tx buf %02x%02x%02x%02x%02x\%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x\n",
+		   __func__, txbuf[0], txbuf[1], txbuf[2], txbuf[3], txbuf[4],
+		   txbuf[5], txbuf[6], txbuf[7], txbuf[8], txbuf[9],
+		   txbuf[10], txbuf[11], txbuf[12], txbuf[13], txbuf[14], txbuf[15]);
+
+	btmtk_sdio_send_tx_data(txbuf, MTK_SDIO_PACKET_HEADER_SIZE + sizeof(cmd));
+
+	btmtk_sdio_recv_rx_data();
+
+	pr_debug("%s rx_length %d\n", __func__, rx_length);
+	pr_debug
+	    ("%s rx_length %d %02x%02x%02x%02x%02x\%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x\n",
+	     __func__, rx_length, rxbuf[0], rxbuf[1], rxbuf[2], rxbuf[3], rxbuf[4]
+	     , rxbuf[5], rxbuf[6], rxbuf[7], rxbuf[8], rxbuf[9]
+	     , rxbuf[10], rxbuf[11], rxbuf[12], rxbuf[13], rxbuf[14]);
+
+	/* compare rx data is wmt reset correct response or not */
+	if (memcmp(event, rxbuf + MTK_SDIO_PACKET_HEADER_SIZE, sizeof(event)) != 0) {
+		ret = -EIO;
+		pr_err("%s: fail\n", __func__);
+	}
+	return ret;
+
 }
 
 static int btmtk_send_rom_patch(u8 *fwbuf, u32 fwlen, int mode)
@@ -1281,7 +1683,7 @@ static int btmtk_sdio_send_wohci(u8 type, u32 len, u8 *data)
  */
 static int btmtk_sdio_need_load_rom_patch(void)
 {
-	u32 ret = 0;
+	u32 ret = -1;
 	u8 cmd[] = {0x1, 0x17, 0x1, 0x0, 0x1};
 	u8 event[] = {0x2, 0x17, 0x1, 0x0};
 
@@ -1307,7 +1709,7 @@ static int btmtk_sdio_need_load_rom_patch(void)
 			btmtk_print_buffer_conent(rxbuf, rx_length);
 		}
 	} while (0);
-
+	pr_err("%s return ret %d\n", __func__, ret);
 	return ret;
 }
 static int btmtk_sdio_set_write_clear(void)
@@ -1334,6 +1736,43 @@ static int btmtk_sdio_set_write_clear(void)
 
 	return ret;
 }
+
+static int btmtk_sdio_set_i2s(void)
+{
+	int ret = 0;
+	u32 pinmux = 0;
+
+	ret = btmtk_sdio_set_i2s_slave();
+	if (ret) {
+		pr_err("btmtk_sdio_set_i2s_slave error(%d)\n", ret);
+		return ret;
+	}
+	ret = btmtk_sdio_read_pin_mux_setting(&pinmux);
+	if (ret) {
+		pr_err("btmtk_sdio_read_pin_mux_setting error(%d)\n", ret);
+		return ret;
+	}
+
+	pinmux &= 0x0000FFFF;
+	pinmux |= 0x22220000;
+	ret = btmtk_sdio_write_pin_mux_setting(pinmux);
+
+	if (ret) {
+		pr_err("btmtk_sdio_write_pin_mux_setting error(%d)\n", ret);
+		return ret;
+	}
+
+	pinmux = 0;
+	ret = btmtk_sdio_read_pin_mux_setting(&pinmux);
+	if (ret) {
+		pr_err("btmtk_sdio_read_pin_mux_setting error(%d)\n", ret);
+		return ret;
+	}
+	pr_info("confirm pinmux %04x\n", pinmux);
+
+	return ret;
+}
+
 static int btmtk_sdio_download_rom_patch(
 					struct btmtk_sdio_card *card)
 {
@@ -1542,14 +1981,13 @@ static int btmtk_sdio_download_rom_patch(
 	btmtk_sdio_set_write_clear();
 
 	if (btmtk_sdio_need_load_rom_patch() == PATCH_READY)
-		pr_info("%s patch is ready\n", __func__);
+		pr_info("%s patchdownload is done by BT\n", __func__);
 
 
 	ret = btmtk_sdio_send_wmt_reset();
 
 	if (ret)
 		goto done;
-
 
 	ret = btmtk_sdio_bt_set_power(1);
 
@@ -1604,24 +2042,22 @@ static void btmtk_sdio_for_code_style(void)
 	}
 }
 
-static int btmtk_sdio_card_to_host(struct btmtk_private *priv)
+static int btmtk_sdio_card_to_host(struct btmtk_private *priv, const u8 *event, const int event_len,
+	int add_spec_header)
+/*event: check event which want to compare*/
+/*return value: -x fail, 0 success*/
 {
 	u16 buf_len = 0;
-	int ret = 0, num_blocks = 0, blksz = 0;
+	int ret = 0;
 	struct sk_buff *skb = NULL;
 	struct sk_buff *fops_skb = NULL;
 	u32 type;
-	u8 *payload = NULL;
 	u32 fourbalignment_len = 0;
-	struct btmtk_sdio_card *card = priv->btmtk_dev.card;
 	u32 dump_len = 0;
 	char *core_dump_end = NULL;
-
-	if (!card || !card->func) {
-		pr_err("card or function or is NULL!\n");
-		ret = -EINVAL;
-		goto exit;
-	}
+	u16 org_packet_len = 0;
+	int i = 0;
+	unsigned char spec_header[] = { 0xff, 0x00, 0xFE, 0x00 };
 
 #if SUPPORT_FW_DUMP
 	fw_is_coredump_end_packet = false;
@@ -1680,9 +2116,8 @@ static int btmtk_sdio_card_to_host(struct btmtk_private *priv)
 					pr_warn("%s : fw_dump_file->f_op->write is NULL\n",
 								__func__);
 
-				if ((dump_len > 0) && fw_dump_file
-					&& fw_dump_file->f_op
-					&& fw_dump_file->f_op->write)
+
+				if ((dump_len > 0) && fw_dump_file)
 					fw_dump_file->f_op->write(fw_dump_file,
 						&rxbuf[SDIO_HEADER_LEN+10],
 						dump_len,
@@ -1731,7 +2166,6 @@ FW_DONE:
 		goto exit;
 	}
 
-	payload = rxbuf;
 	pr_debug("%s rx_length %d,buf_len %d\n", __func__, rx_length, buf_len);
 
 	memcpy(skb->data, &rxbuf[MTK_SDIO_PACKET_HEADER_SIZE+1], buf_len);
@@ -1751,57 +2185,67 @@ FW_DONE:
 		break;
 	}
 
+	if (event_compare_status == BTMTK_SDIO_EVENT_COMPARE_STATE_NEED_COMPARE)
+		BTSDIO_INFO_RAW(skb->data, buf_len, "%s: skb->data :", __func__);
+
+	if ((buf_len >= sizeof(READ_ADDRESS_EVENT))
+		&& (event_compare_status == BTMTK_SDIO_EVENT_COMPARE_STATE_NEED_COMPARE)) {
+		if ((memcmp(skb->data, READ_ADDRESS_EVENT, sizeof(READ_ADDRESS_EVENT)) == 0) && (buf_len == 12)) {
+			for (i = 0; i < BD_ADDRESS_SIZE; i++)
+				g_card->bdaddr[i] = skb->data[6 + i];
+
+			pr_info("%s: GET TV BDADDR = %02X:%02X:%02X:%02X:%02X:%02X", __func__,
+			g_card->bdaddr[0], g_card->bdaddr[1], g_card->bdaddr[2],
+			g_card->bdaddr[3], g_card->bdaddr[4], g_card->bdaddr[5]);
+
+			//event_compare_status = BTMTK_SDIO_EVENT_COMPARE_STATE_COMPARE_SUCCESS;
+		} else
+			pr_info("%s READ_ADDRESS_EVENT compare fail buf_len %d\n", __func__, buf_len);
+	}
+
 	lock_unsleepable_lock(&(metabuffer.spin_lock));
-	if (priv->adapter->fops_mode &
-			(!fw_is_doing_coredump) &
+	if ((!fw_is_doing_coredump) &
 			(!fw_is_coredump_end_packet)) {
-		fops_skb = bt_skb_alloc(buf_len, GFP_ATOMIC);
-		bt_cb(fops_skb)->pkt_type = type;
-		memcpy(fops_skb->data, skb->data, buf_len);
+		if (event_compare_status == BTMTK_SDIO_EVENT_COMPARE_STATE_NEED_COMPARE) {
+			/*compare with tx hci cmd*/
+			if (buf_len >= event_need_compare_len) {
+				if (memcmp(skb->data, event_need_compare, event_need_compare_len) == 0) {
+					event_compare_status = BTMTK_SDIO_EVENT_COMPARE_STATE_COMPARE_SUCCESS;
+					pr_info("%s compare success\n", __func__);
+				} else {
+					pr_debug("%s compare fail\n", __func__);
+					BTSDIO_DEBUG_RAW(event_need_compare, event_need_compare_len,
+						"%s: event_need_compare :", __func__);
+				}
+			}
+		}
+
+		if (event_add_spec_header_status) {
+			/*compare with tx hci cmd*/
+			org_packet_len = buf_len;
+			buf_len += sizeof(spec_header);
+			fops_skb = bt_skb_alloc(buf_len, GFP_ATOMIC);
+			bt_cb(fops_skb)->pkt_type = HCI_EVENT_PKT;
+			memcpy(fops_skb->data, spec_header, sizeof(spec_header));
+			memcpy(fops_skb->data + sizeof(spec_header), skb->data, buf_len);
+		} else {
+			org_packet_len = buf_len;
+			fops_skb = bt_skb_alloc(buf_len, GFP_ATOMIC);
+			bt_cb(fops_skb)->pkt_type = type;
+			memcpy(fops_skb->data, skb->data, buf_len);
+		}
+
 		fops_skb->len = buf_len;
 		skb_queue_tail(&g_priv->adapter->fops_queue, fops_skb);
-		pr_debug("%s push fops_queue\n", __func__);
 		if (skb_queue_empty(&g_priv->adapter->fops_queue))
 			pr_info("%s fops_queue is empty\n", __func__);
 
 		kfree_skb(skb);
 		unlock_unsleepable_lock(&(metabuffer.spin_lock));
-		pr_debug("%s call inq wake up\n", __func__);
 		wake_up_interruptible(&inq);
 		goto exit;
 	}
 	unlock_unsleepable_lock(&(metabuffer.spin_lock));
-
-	switch (type) {
-	case HCI_ACLDATA_PKT:
-	case HCI_SCODATA_PKT:
-	case HCI_EVENT_PKT:
-		bt_cb(skb)->pkt_type = type;
-		skb_put(skb, buf_len);
-		break;
-
-	case MTK_VENDOR_PKT:
-		pr_warn("%s, MTK_VENDOR_PKT no handle now, break\n",
-			__func__);
-		kfree_skb(skb);
-		break;
-
-		bt_cb(skb)->pkt_type = HCI_VENDOR_PKT;
-		skb_put(skb, buf_len);
-		skb_pull(skb, SDIO_HEADER_LEN);
-
-/* if kernel < 3, 11, 0, should use hci_recv_frame(skb); */
-
-		break;
-
-	default:
-		pr_warn("Unknown packet type:%d\n", type);
-		pr_warn("hex: %*ph\n", blksz * num_blocks, payload);
-
-		kfree_skb(skb);
-		skb = NULL;
-		break;
-	}
 
 exit:
 	if (ret) {
@@ -1809,10 +2253,9 @@ exit:
 		kfree_skb(skb);
 	}
 
-
 	buf_len += 1;
-	if (buf_len%4)
-		fourbalignment_len = buf_len + 4 - buf_len%4;
+	if (buf_len % 4)
+		fourbalignment_len = buf_len + 4 - (buf_len % 4);
 	else
 		fourbalignment_len = buf_len;
 
@@ -1848,13 +2291,16 @@ static int btmtk_sdio_process_int_status(
 	if (RX_DONE&u32ReadCRValue)
 		ret = btmtk_sdio_recv_rx_data();
 
-	if (ret == 0)
+	if (ret == 0) {
+		lock_unsleepable_lock(&event_compare_status_lock);
 		while (rx_length > (MTK_SDIO_PACKET_HEADER_SIZE)) {
-			btmtk_sdio_card_to_host(priv);
+			btmtk_sdio_card_to_host(priv, NULL, -1, 0);
 			u32rxdatacount++;
 			pr_debug("%s u32rxdatacount %d\n",
 				__func__, u32rxdatacount);
 		}
+		unlock_unsleepable_lock(&event_compare_status_lock);
+	}
 
 	btmtk_sdio_enable_interrupt(1);
 
@@ -2087,58 +2533,6 @@ static int btmtk_sdio_disable_host_int(struct btmtk_sdio_card *card)
 	return ret;
 }
 
-static int btmtk_sdio_host_to_card(struct btmtk_private *priv,
-				u8 *payload, u16 nb)
-{
-	struct btmtk_sdio_card *card = priv->btmtk_dev.card;
-	int ret = 0;
-	int i = 0;
-	u8 MultiBluckCount = 0;
-	u8 redundant = 0;
-
-	if (payload != txbuf) {
-		memset(txbuf, 0, MTK_TXDATA_SIZE);
-		memcpy(txbuf, payload, nb);
-	}
-
-	if (!card || !card->func) {
-		pr_err("card or function is NULL!\n");
-		return -EINVAL;
-	}
-
-	MultiBluckCount = nb/SDIO_BLOCK_SIZE;
-	redundant = nb % SDIO_BLOCK_SIZE;
-
-	if (redundant)
-		nb = (MultiBluckCount+1)*SDIO_BLOCK_SIZE;
-
-	if (nb < 16)
-		btmtk_print_buffer_conent(txbuf, nb);
-	else
-		btmtk_print_buffer_conent(txbuf, 16);
-
-	do {
-		/* Transfer data to card */
-		sdio_claim_host(card->func);
-		ret = sdio_writesb(card->func, CTDR, txbuf, nb);
-		sdio_release_host(card->func);
-		if (ret < 0) {
-			i++;
-			pr_err("i=%d writesb failed: %d\n", i, ret);
-			pr_err("hex: %*ph\n", nb, txbuf);
-			ret = -EIO;
-			if (i > MAX_WRITE_IOMEM_RETRY)
-				goto exit;
-		}
-	} while (ret);
-
-	if (priv)
-		priv->btmtk_dev.tx_dnld_rdy = false;
-
-exit:
-	return ret;
-}
-
 static int btmtk_sdio_download_fw(struct btmtk_sdio_card *card)
 {
 	int ret;
@@ -2294,29 +2688,43 @@ static int btmtk_sdio_probe(struct sdio_func *func,
 		card->sd_blksz_fw_dl = data->sd_blksz_fw_dl;
 		card->support_pscan_win_report = data->support_pscan_win_report;
 		card->supports_fw_dump = data->supports_fw_dump;
+		card->chip_id = data->reg->chip_id;
+		card->suspend_count = 0;
+		pr_info("%s chip_id is %x\n", __func__, data->reg->chip_id);
+		/*allocate memory for woble_setting_file*/
+		g_card->woble_setting_file_name = kzalloc(MAX_BIN_FILE_NAME_LEN, GFP_KERNEL);
+		if (!g_card->woble_setting_file_name)
+			return -1;
+
+		memcpy(g_card->woble_setting_file_name,
+				WOBLE_SETTING_FILE_NAME,
+				sizeof(WOBLE_SETTING_FILE_NAME));
 	}
 
-	pr_info("%s func device %X\n", __func__, card->func->device);
-	pr_info("%s Call btmtk_sdio_register_dev\n", __func__);
+	pr_debug("%s func device %X\n", __func__, card->func->device);
+	pr_debug("%s Call btmtk_sdio_register_dev\n", __func__);
 	if (btmtk_sdio_register_dev(card) < 0) {
 		pr_err("Failed to register BT device!\n");
 		return -ENODEV;
 	}
 
-	pr_info("%s btmtk_sdio_register_dev success\n", __func__);
+	pr_debug("%s btmtk_sdio_register_dev success\n", __func__);
 
 	/* Disable the interrupts on the card */
 	btmtk_sdio_enable_host_int(card);
-	pr_info("call btmtk_sdio_enable_host_int done\n");
+	pr_debug("call btmtk_sdio_enable_host_int done\n");
 	if (btmtk_sdio_download_fw(card)) {
 		pr_err("Downloading firmware failed!\n");
 		ret = -ENODEV;
 		goto unreg_dev;
 	}
 
+	btmtk_sdio_set_i2s();
 	/* Move from btmtk_fops_open() */
 	spin_lock_init(&(metabuffer.spin_lock.lock));
-	pr_info("%s spin_lock_init end\n", __func__);
+	spin_lock_init(&(event_compare_status_lock.lock));
+	spin_lock_init(&(tx_function_lock.lock));
+	pr_debug("%s spin_lock_init end\n", __func__);
 
 	priv = btmtk_add_card(card);
 	if (!priv) {
@@ -2324,9 +2732,9 @@ static int btmtk_sdio_probe(struct sdio_func *func,
 		ret = -ENODEV;
 		goto unreg_dev;
 	}
-	pr_info("btmtk_add_card success\n");
+	pr_debug("btmtk_add_card success\n");
 	card->priv = priv;
-	pr_info("assign priv done\n");
+	pr_debug("assign priv done\n");
 	/* Initialize the interface specific function pointers */
 	priv->hw_host_to_card = btmtk_sdio_host_to_card;
 	priv->hw_process_int_status = btmtk_sdio_process_int_status;
@@ -2356,7 +2764,17 @@ static int btmtk_sdio_probe(struct sdio_func *func,
 	fw_dump_buffer_full = 0;
 
 	ret = btmtk_sdio_readl(CHLPCR, &u32ReadCRValue);
-	pr_info("%s read CHLPCR (0x%08X)\n", __func__, u32ReadCRValue);
+	pr_debug("%s read CHLPCR (0x%08X)\n", __func__, u32ReadCRValue);
+	pr_debug("%s chipid is  (0x%X)\n", __func__, g_card->chip_id);
+	if (is_support_unify_woble(g_card)) {
+		memset(g_card->bdaddr, 0, BD_ADDRESS_SIZE);
+		btmtk_sdio_load_woble_setting(g_card->woble_setting,
+			g_card->woble_setting_file_name,
+			&g_card->func->dev,
+			&g_card->woble_setting_len,
+			g_card);
+	}
+
 	pr_info("%s normal end\n", __func__);
 	probe_ready = true;
 	return 0;
@@ -2391,10 +2809,12 @@ static void btmtk_sdio_remove(struct sdio_func *func)
 
 				btmtk_sdio_disable_host_int(card);
 			}
+			btmtk_sdio_woble_free_setting();
 			pr_debug("unregester dev\n");
 			card->priv->surprise_removed = true;
 			btmtk_sdio_unregister_dev(card);
 			btmtk_remove_card(card->priv);
+			need_reset_stack = 1;
 		}
 	}
 	pr_info("%s end\n", __func__);
@@ -2408,39 +2828,419 @@ static void btmtk_sdio_remove(struct sdio_func *func)
  * #define HCI_EVENT_PKT     0x04
  * #define HCI_VENDOR_PKT    0xff
  */
-static int btmtk_sdio_send_cmd(u8 cmd_type, u8 *cmd, int cmd_len)
+static int btmtk_sdio_send_hci_cmd(u8 cmd_type, u8 *cmd, int cmd_len,
+		const u8 *event, const int event_len,
+		int total_timeout, int add_spec_header, bool wait_until)
+		/*cmd: if cmd is null, don't compare event, just return 0 if send cmd success*/
+		/* total_timeout: -1 */
+		/* add_spec_header:0 hci event, 1 use vend specic event header*/
+		/* return 0 if compare successfully and no need to compare */
+		/* return < 0 if error*/
+		/*wait_until: 0:need compare with first event after cmd*/
+		/*return value: 0 or positive success, -x fail*/
 {
-	u8 ret = 0;
-	u32 sdio_header_len = 0;
-	u8 *send_data = NULL;
-	u32 send_data_len = cmd_len + BTM_HEADER_LEN;
+	int ret = -1;
+	unsigned long comp_event_timo = 0, start_time = 0;
+	struct sk_buff *skb = NULL;
 
 	if (cmd_len == 0) {
 		pr_err("%s cmd_len (%d) error return\n", __func__, cmd_len);
 		return -EINVAL;
 	}
 
-	send_data = kmalloc(send_data_len, GFP_KERNEL);
-	sdio_header_len = send_data_len;
-	memset(send_data, 0, send_data_len);
-	send_data[0] = (sdio_header_len & 0x0000ff);
-	send_data[1] = (sdio_header_len & 0x00ff00) >> 8;
-	send_data[2] = 0;
-	send_data[3] = 0;
-	send_data[4] = cmd_type;
-	memcpy(&send_data[BTM_HEADER_LEN], &cmd[0], cmd_len);
-	ret = btmtk_sdio_host_to_card(g_priv, send_data, send_data_len);
-	kfree(send_data);
+
+	skb = bt_skb_alloc(cmd_len, GFP_ATOMIC);
+	bt_cb(skb)->pkt_type = cmd_type;
+	memcpy(&skb->data[0], cmd, cmd_len);
+	skb->len = cmd_len;
+	skb_queue_tail(&g_priv->adapter->tx_queue, skb);
+	wake_up_interruptible(&g_priv->main_thread.wait_q);
+
+
+	if (event == NULL)
+		return 0;
+
+	if (event_len > EVENT_COMPARE_SIZE) {
+		pr_err("%s event_len (%d) > EVENT_COMPARE_SIZE(%d), error\n", __func__, event_len, EVENT_COMPARE_SIZE);
+		return -1;
+	}
+
+	memcpy(event_need_compare, event, event_len);
+	event_need_compare_len = event_len;
+
+	start_time = jiffies;
+	// check HCI event
+	event_add_spec_header_status = add_spec_header;
+	comp_event_timo = jiffies + msecs_to_jiffies(total_timeout);
+	ret = -1;
+	event_compare_status = BTMTK_SDIO_EVENT_COMPARE_STATE_NEED_COMPARE;
+
+	pr_info("%s event_need_compare_len %d\n", __func__, event_need_compare_len);
+	do {
+		//check if event_compare_success
+		if (event_compare_status == BTMTK_SDIO_EVENT_COMPARE_STATE_COMPARE_SUCCESS) {
+			pr_info("%s compare success\n", __func__);
+			ret = 0;
+			break;
+		}
+
+		msleep(100);
+	} while (time_before(jiffies, comp_event_timo));
+	event_compare_status = BTMTK_SDIO_EVENT_COMPARE_STATE_NOTHING_NEED_COMPARE;
+	event_add_spec_header_status = 0;
+	pr_info("%s ret %d\n", __func__, ret);
 	return ret;
 }
-static int btmtk_sdio_send_woble_cmd(void)
-{
-	u8 ret = 0;
-	u8 cmd[] = { 0xC9, 0xFC, 0x0D, 0x01, 0x0E, 0x00, 0x05, 0x43,
-			0x52, 0x4B, 0x54, 0x4D, 0x20, 0x04, 0x32, 0x00};
 
-	ret = btmtk_sdio_send_cmd(HCI_COMMAND_PKT, cmd, sizeof(cmd));
-	pr_info("%s return %d\n", __func__, ret);
+static int btmtk_sdio_send_get_vendor_cap(void)
+{
+	int ret = -1;
+	u8 get_vendor_cap_cmd[] = { 0x53, 0xFD, 0x00 };
+	u8 get_vendor_cap_event[] = { 0x0e, 0x12, 0x01, 0x53, 0xFD, 0x00};
+
+	pr_info("%s: begin", __func__);
+	BTSDIO_INFO_RAW(get_vendor_cap_cmd, sizeof(get_vendor_cap_cmd), "%s: send vendor_cap_cmd is:", __func__);
+	ret = btmtk_sdio_send_hci_cmd(HCI_COMMAND_PKT, get_vendor_cap_cmd, sizeof(get_vendor_cap_cmd),
+		get_vendor_cap_event, sizeof(get_vendor_cap_event),
+				WOBLE_COMP_EVENT_TIMO, 1, 1);
+
+	pr_info("%s: ret %d", __func__, ret);
+	return ret;
+}
+
+static int btmtk_sdio_send_read_BDADDR_cmd(void)
+{
+	u8 cmd[] = { 0x09, 0x10, 0x00 };
+	int ret = -1;
+	unsigned char zero[BD_ADDRESS_SIZE];
+
+	pr_info("%s: begin", __func__);
+	if (g_card == NULL) {
+		pr_err("%s: g_card == NULL!", __func__);
+		return -1;
+	}
+
+	memset(zero, 0, sizeof(zero));
+	if (memcmp(g_card->bdaddr, zero, BD_ADDRESS_SIZE) != 0) {
+		pr_info("%s: already got bdaddr %02x%02x%02x%02x%02x%02x, return 0", __func__,
+		g_card->bdaddr[0], g_card->bdaddr[1], g_card->bdaddr[2],
+		g_card->bdaddr[3], g_card->bdaddr[4], g_card->bdaddr[5]);
+		return 0;
+	}
+	BTSDIO_INFO_RAW(cmd, sizeof(cmd), "%s: send read bd address cmd is:", __func__);
+	ret = btmtk_sdio_send_hci_cmd(HCI_COMMAND_PKT, cmd, sizeof(cmd),
+		READ_ADDRESS_EVENT, sizeof(READ_ADDRESS_EVENT), WOBLE_COMP_EVENT_TIMO, 1, 1);
+	/*BD address will get in btmtk_sdio_host_to_card*/
+	pr_info("%s: ret = %d", __func__, ret);
+
+	return ret;
+}
+
+static int btmtk_sdio_set_Woble_APCF_filter_parameter(void)
+{
+	int ret = -1;
+	u8 cmd[] = { 0x57, 0xfd, 0x0a, 0x01, 0x00, 0x5a, 0x20, 0x00, 0x20, 0x00, 0x01, 0x80, 0x00 };
+	u8 event_complete[] = { 0x0e, 0x07, 0x01, 0x57, 0xfd, 0x00, 0x01/*, 00, 63*/ };
+
+	pr_info("%s: begin", __func__);
+	ret = btmtk_sdio_send_hci_cmd(HCI_COMMAND_PKT, cmd, sizeof(cmd),
+		event_complete, sizeof(event_complete),
+		WOBLE_COMP_EVENT_TIMO, 1, 1);
+	if (ret < 0)
+		pr_err("%s: end ret %d", __func__, ret);
+	else
+		ret = 0;
+
+	pr_info("%s: end ret=%d", __func__, ret);
+	return ret;
+}
+
+
+/**
+ * Set APCF manufacturer data and filter parameter
+ */
+static int btmtk_sdio_set_Woble_APCF(void)
+{
+	int ret = -1;
+	int i = 0;
+	u8 manufactur_data[] = { 0x57, 0xfd, 0x27, 0x06, 0x00, 0x5a,
+		0x46, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x43, 0x52, 0x4B, 0x54, 0x4D,
+		0xFF, 0xFF, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+		0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
+	u8 event_complete[] = { 0x0e, 0x07, 0x01, 0x57, 0xfd};
+
+	pr_info("%s: begin", __func__);
+	if (!g_card) {
+		pr_info("%s: g_card is NULL, return -1", __func__);
+		return -1;
+	}
+
+	pr_info("%s: g_card->woble_setting_apcf[0].length %d",
+		__func__, g_card->woble_setting_apcf[0].length);
+
+	/* start to send apcf cmd from woble setting  file */
+	if (g_card->woble_setting_apcf[0].length) {
+		for (i = 0; i < WOBLE_SETTING_COUNT; i++) {
+			if (!g_card->woble_setting_apcf[i].length)
+				continue;
+
+			pr_info("%s: g_data->woble_setting_apcf_fill_mac[%d].content[0] = 0x%02x",
+				__func__, i,
+				g_card->woble_setting_apcf_fill_mac[i].content[0]);
+			pr_info("%s: g_data->woble_setting_apcf_fill_mac_location[%d].length = %d",
+				__func__, i,
+				g_card->woble_setting_apcf_fill_mac_location[i].length);
+
+			if ((g_card->woble_setting_apcf_fill_mac[i].content[0] == 1) &&
+				g_card->woble_setting_apcf_fill_mac_location[i].length) {
+				/* need add BD addr to apcf cmd */
+				memcpy(g_card->woble_setting_apcf[i].content +
+					(*g_card->woble_setting_apcf_fill_mac_location[i].content),
+					g_card->bdaddr, BD_ADDRESS_SIZE);
+				pr_info("%s: apcf %d ,add mac to location %d",
+					__func__, i,
+					(*g_card->woble_setting_apcf_fill_mac_location[i].content));
+			}
+
+			pr_info("%s: send APCF %d", __func__, i);
+			BTSDIO_INFO_RAW(g_card->woble_setting_apcf[i].content, g_card->woble_setting_apcf[i].length,
+				"woble_setting_apcf");
+
+			ret = btmtk_sdio_send_hci_cmd(HCI_COMMAND_PKT, g_card->woble_setting_apcf[i].content,
+				g_card->woble_setting_apcf[i].length,
+				event_complete, sizeof(event_complete), WOBLE_COMP_EVENT_TIMO, 1, 1);
+
+			if (ret < 0) {
+				pr_err("%s: apcf %d error ret %d", __func__, i, ret);
+				return ret;
+			}
+
+		}
+	} else { /* use default */
+		pr_info("%s: use default manufactur data", __func__);
+		memcpy(manufactur_data + 9, g_card->bdaddr, BD_ADDRESS_SIZE);
+		BTSDIO_INFO_RAW(manufactur_data, sizeof(manufactur_data),
+						"send manufactur_data ");
+
+		ret = btmtk_sdio_send_hci_cmd(HCI_COMMAND_PKT, manufactur_data,
+				sizeof(manufactur_data),
+				event_complete, sizeof(event_complete), WOBLE_COMP_EVENT_TIMO, 1, 1);
+		if (ret < 0) {
+			pr_err("%s: manufactur_data error ret %d", __func__, ret);
+			return ret;
+		}
+
+		ret = btmtk_sdio_set_Woble_APCF_filter_parameter();
+	}
+
+	pr_info("%s: end ret=%d", __func__, ret);
+	return ret;
+}
+
+
+
+static int btmtk_sdio_send_woble_settings(struct woble_setting_struct *settings_cmd,
+	struct woble_setting_struct *settings_event, char *message)
+{
+	int ret = -1;
+	int i = 0;
+
+	pr_info("%s: %s length %d",
+		__func__, message, settings_cmd->length);
+	if (g_card->woble_setting_radio_on[0].length) {
+		for (i = 0; i < WOBLE_SETTING_COUNT; i++) {
+			if (settings_cmd[i].length) {
+				pr_info("%s: send %s %d", __func__, message, i);
+				BTSDIO_INFO_RAW(settings_cmd[i].content,
+					settings_cmd[i].length, "Raw");
+
+				ret = btmtk_sdio_send_hci_cmd(HCI_COMMAND_PKT, settings_cmd[i].content,
+				settings_cmd[i].length,
+				settings_event[i].content,
+				settings_event[i].length, WOBLE_COMP_EVENT_TIMO, 1, 1);
+
+				if (ret) {
+					pr_err("%s: %s %d return error",
+							__func__, message, i);
+					return ret;
+				}
+			}
+		}
+	}
+	return ret;
+}
+static int btmtk_sdio_send_unify_woble_suspend_default_cmd(void)
+{
+	int ret = 0;	/* if successful, 0 */
+	u8 cmd[] = { 0xC9, 0xFC, 0x14, 0x01, 0x20, 0x02, 0x00, 0x01,
+		0x02, 0x01, 0x00, 0x05, 0x10, 0x01, 0x00, 0x40, 0x06,
+		0x02, 0x40, 0x5A, 0x02, 0x41, 0x0F };
+	/*u8 status[] = { 0x0F, 0x04, 0x00, 0x01, 0xC9, 0xFC };*/
+	u8 comp_event[] = { 0xE6, 0x02, 0x08, 0x00 };
+	pr_debug("%s: begin", __func__);
+
+
+	ret = btmtk_sdio_send_hci_cmd(HCI_COMMAND_PKT, cmd,
+				sizeof(cmd),
+				comp_event, sizeof(comp_event), WOBLE_COMP_EVENT_TIMO, 1, 1);
+	if (ret)
+		pr_err("%s: comp_event return error(%d)", __func__, ret);
+
+    return ret;
+}
+/**
+ * Set APCF manufacturer data and filter parameter
+ */
+static int btmtk_sdio_set_Woble_radio_off(void)
+{
+	int ret = -1;
+
+	pr_info("%s: g_data->woble_setting_radio_off[0].length %d",
+			__func__, g_card->woble_setting_radio_off[0].length);
+	pr_info("%s: g_card->woble_setting_radio_off_comp_event[0].length %d",
+			__func__, g_card->woble_setting_radio_off_comp_event[0].length);
+
+	if (g_card->woble_setting_radio_off[0].length) {
+		if (g_card->woble_setting_radio_off_comp_event[0].length &&
+		is_support_unify_woble(g_card)) {
+			ret = btmtk_sdio_send_woble_settings(g_card->woble_setting_radio_off,
+			g_card->woble_setting_radio_off_comp_event, "radio off");
+			if (ret) {
+				pr_err("%s: radio off error", __func__);
+				return ret;
+			}
+		}
+		else
+			pr_info("%s: woble_setting_radio_off length is %d", __func__,
+		        g_card->woble_setting_radio_off[0].length);
+	} else {/* use default */
+		pr_info("%s: use default radio off cmd", __func__);
+		ret = btmtk_sdio_send_unify_woble_suspend_default_cmd();
+	}
+
+	pr_info("%s: end ret=%d", __func__, ret);
+	return ret;
+}
+
+static int btmtk_sdio_handle_entering_WoBLE_state(void)
+{
+	int ret = -1;
+
+	pr_info("%s: begin", __func__);
+	if (is_support_unify_woble(g_card)) {
+		ret = btmtk_sdio_send_get_vendor_cap();
+		if (ret < 0) {
+			pr_err("%s: btmtk_sdio_send_get_vendor_cap return fail ret = %d", __func__, ret);
+			goto Finish;
+		}
+
+		ret = btmtk_sdio_send_read_BDADDR_cmd();
+		if (ret < 0) {
+			pr_err("%s: btmtk_sdio_send_read_BDADDR_cmd return fail ret = %d", __func__, ret);
+			goto Finish;
+		}
+
+		ret = btmtk_sdio_set_Woble_APCF();
+		if (ret < 0) {
+			pr_err("%s: btmtk_sdio_set_Woble_APCF return fail %d", __func__, ret);
+			goto Finish;
+		}
+
+		ret = btmtk_sdio_set_Woble_radio_off();
+		if (ret < 0) {
+			pr_err("%s: btmtk_sdio_set_Woble_radio_off return fail %d", __func__, ret);
+			goto Finish;
+		}
+	}
+
+Finish:
+	if (ret)
+		btmtk_sdio_woble_wake_lock(g_card);
+
+	pr_info("%s: end", __func__);
+	return ret;
+}
+
+static int btmtk_sdio_send_leave_woble_suspend_cmd(void)
+{
+	int ret = 0;	/* if successful, 0 */
+	u8 cmd[] = { 0xC9, 0xFC, 0x05, 0x01, 0x21, 0x02, 0x00, 0x00 };
+	u8 comp_event[] = { 0xe6, 0x02, 0x08, 0x01 };
+
+	BTSDIO_INFO_RAW(cmd, sizeof(cmd), "cmd ");
+	ret = btmtk_sdio_send_hci_cmd(HCI_COMMAND_PKT, cmd,	sizeof(cmd),
+				comp_event, sizeof(comp_event), WOBLE_COMP_EVENT_TIMO, 1, 1);
+
+	if (ret < 0) {
+		pr_err("%s: failed(%d)", __func__, ret);
+	} else {
+		pr_info("%s: OK", __func__);
+		ret = 0;
+	}
+	return ret;
+}
+
+
+static int btmtk_sdio_handle_leaving_WoBLE_state(void)
+{
+	int ret = -1;
+
+	if (g_card == NULL) {
+		pr_err("%s: g_card is NULL return", __func__);
+		return 0;
+	}
+
+	if (!is_support_unify_woble(g_card)) {
+		pr_err("%s: do nothing", __func__);
+		return 0;
+	}
+
+	if (g_card->woble_setting_radio_on[0].length &&
+		g_card->woble_setting_radio_on_comp_event[0].length &&
+		g_card->woble_setting_apcf_resume[0].length &&
+		g_card->woble_setting_apcf_resume_event[0].length) {
+			/* start to send radio off cmd from woble setting file */
+		ret = btmtk_sdio_send_woble_settings(g_card->woble_setting_radio_on,
+			g_card->woble_setting_radio_on_comp_event, "radio on");
+		if (ret) {
+			pr_err("%s: wradio on error", __func__);
+			return ret;
+		}
+
+		ret = btmtk_sdio_send_woble_settings(g_card->woble_setting_apcf_resume,
+			g_card->woble_setting_apcf_resume_event, "apcf resume");
+		if (ret) {
+			pr_err("%s: apcf resume error", __func__);
+			return ret;
+		}
+
+	} else { /* use default */
+		ret = btmtk_sdio_send_leave_woble_suspend_cmd();
+
+	}
+
+	if (ret) {
+		pr_err("%s: woble_setting_radio_on return error", __func__);
+		return ret;
+	}
+
+
+
+	return ret;
+}
+
+static int btmtk_sdio_send_apcf_reserved(void)
+{
+	int ret = -1;
+	u8 reserve_apcf_cmd[] = { 0x5C, 0xFC, 0x01, 0x0A };
+	u8 reserve_apcf_event[] = { 0x0e, 0x06, 0x01, 0x5C, 0xFC, 0x00 };
+
+	ret = btmtk_sdio_send_hci_cmd(HCI_COMMAND_PKT, reserve_apcf_cmd,
+				sizeof(reserve_apcf_cmd),
+				reserve_apcf_event, sizeof(reserve_apcf_event), WOBLE_COMP_EVENT_TIMO, 1, 1);
+
+	pr_info("%s: ret %d", __func__, ret);
 	return ret;
 }
 
@@ -2450,16 +3250,29 @@ static int btmtk_sdio_suspend(struct device *dev)
 	u8 ret = 0;
 	mmc_pm_flag_t pm_flags;
 
+	pr_info("%s begin\n", __func__);
+
+	if (g_card == NULL) {
+		pr_err("%s: g_card is NULL return", __func__);
+		return 0;
+	}
+
+	if ((g_card->suspend_count++)) {
+		pr_warn("%s: Has suspended. suspend_count: %d", __func__, g_card->suspend_count);
+		pr_info("%s: end", __func__);
+		return 0;
+	}
+	pr_info("%s start to send DRIVER_OWN\n", __func__);
 	ret = btmtk_sdio_set_own_back(DRIVER_OWN);
+
 	if (ret)
 		pr_err("%s set driver own fail\n", __func__);
 
-	ret = btmtk_sdio_send_woble_cmd();
-	if (ret)
-		pr_err("%s set woble cmd fail\n", __func__);
+	if (!is_support_unify_woble(g_card))
+		pr_warn("%s: no support", __func__);
+	else
+		btmtk_sdio_handle_entering_WoBLE_state();
 
-	need_reset_stack = 1;
-	pr_notice("%s set reset_stack 1\n", __func__);
 	if (func) {
 		pm_flags = sdio_get_host_pm_caps(func);
 		pr_debug("%s: suspend: PM flags = 0x%x\n",
@@ -2467,24 +3280,41 @@ static int btmtk_sdio_suspend(struct device *dev)
 		if (!(pm_flags & MMC_PM_KEEP_POWER)) {
 			pr_err("%s: cannot remain alive while suspended\n",
 				sdio_func_id(func));
-			//return -EINVAL;
+			return -EINVAL;
 		}
 	} else {
 		pr_err("sdio_func is not specified\n");
 		return 0;
 	}
-    btmtk_sdio_bt_set_power(0);
+
 	ret = btmtk_sdio_set_own_back(FW_OWN);
 	if (ret)
-	    pr_err("%s set fw own fail\n", __func__);
-        pr_notice("%s return 0 directly\n", __func__);
-	return 0;//sdio_set_host_pm_flags(func, MMC_PM_KEEP_POWER);
+		pr_err("%s set fw own fail\n", __func__);
+
+	return sdio_set_host_pm_flags(func, MMC_PM_KEEP_POWER);
 }
 
 static int btmtk_sdio_resume(struct device *dev)
 {
+	u8 ret = 0;
+
+	if (g_card == NULL) {
+		pr_err("%s: g_card is NULL return", __func__);
+		return 0;
+	}
+
+	g_card->suspend_count--;
+	if (g_card->suspend_count) {
+		pr_warn("%s: data->suspend_count %d, return 0", __func__, g_card->suspend_count);
+		return 0;
+	}
+
+	ret = btmtk_sdio_handle_leaving_WoBLE_state();
+
+	if (ret)
+		pr_err("%s: btmtk_sdio_handle_leaving_WoBLE_state return fail  %d", __func__, ret);
+
 	pr_info("%s begin return 0, do nothing\n", __func__);
-    btmtk_sdio_bt_set_power(1);
 	return 0;
 }
 
@@ -2503,6 +3333,27 @@ static struct sdio_driver bt_mtk_sdio = {
 		.pm = &btmtk_sdio_pm_ops,
 	}
 };
+
+static int btmtk_clean_queue(void)
+{
+	struct sk_buff *skb = NULL;
+
+	lock_unsleepable_lock(&(metabuffer.spin_lock));
+	if (!skb_queue_empty(&g_priv->adapter->fops_queue)) {
+		pr_info("%s clean data in fops_queue\n", __func__);
+		do {
+			skb = skb_dequeue(&g_priv->adapter->fops_queue);
+			if (skb == NULL) {
+				pr_info("%s skb=NULL error break\n", __func__);
+				break;
+			}
+
+			kfree_skb(skb);
+		} while (!skb_queue_empty(&g_priv->adapter->fops_queue));
+	}
+	unlock_unsleepable_lock(&(metabuffer.spin_lock));
+	return 0;
+}
 
 static int btmtk_fops_open(struct inode *inode, struct file *file)
 {
@@ -2530,6 +3381,14 @@ static int btmtk_fops_open(struct inode *inode, struct file *file)
 		return -ENOENT;
 	}
 
+	if (g_card) {
+		if (is_support_unify_woble(g_card))
+			btmtk_sdio_send_apcf_reserved();
+	} else
+		pr_err("%s g_card is NULL\n", __func__);
+
+	btmtk_clean_queue();
+
 	if (g_priv)
 		g_priv->adapter->fops_mode = true;
 
@@ -2539,8 +3398,6 @@ static int btmtk_fops_open(struct inode *inode, struct file *file)
 
 static int btmtk_fops_close(struct inode *inode, struct file *file)
 {
-	struct sk_buff *skb = NULL;
-
 	pr_info("%s begin\n", __func__);
 
 	if (!probe_ready) {
@@ -2549,25 +3406,10 @@ static int btmtk_fops_close(struct inode *inode, struct file *file)
 		return -EFAULT;
 	}
 
-	spin_lock_init(&(metabuffer.spin_lock.lock));
 	if (g_priv)
 		g_priv->adapter->fops_mode = false;
 
-	lock_unsleepable_lock(&(metabuffer.spin_lock));
-
-	if (!skb_queue_empty(&g_priv->adapter->fops_queue)) {
-		pr_info("%s clean data in fops_queue\n", __func__);
-		do {
-			skb = skb_dequeue(&g_priv->adapter->fops_queue);
-			if (skb == NULL) {
-				pr_info("%s skb=NULL error break\n", __func__);
-				break;
-			}
-
-			kfree_skb(skb);
-		} while (!skb_queue_empty(&g_priv->adapter->fops_queue));
-	}
-	unlock_unsleepable_lock(&(metabuffer.spin_lock));
+	btmtk_clean_queue();
 
 	pr_info("%s fops_mode=%d end\n", __func__, g_priv->adapter->fops_mode);
 	return 0;
@@ -2579,7 +3421,9 @@ ssize_t btmtk_fops_write(struct file *filp, const char __user *buf,
 	int retval = 0;
 	struct sk_buff *skb = NULL;
 	u32 crAddr = 0, crValue = 0, crMask = 0;
-	/*int i = 0;*/
+	static u8 waiting_for_hci_without_packet_type; /* INITIALISED_STATIC: do not initialise statics to 0 */
+	static u8 hci_packet_type = 0xff;
+	u32 copy_size = 0;
 
 	if (!probe_ready) {
 		pr_err("%s probe_ready is %d return\n",
@@ -2654,15 +3498,52 @@ ssize_t btmtk_fops_write(struct file *filp, const char __user *buf,
 				__func__, crAddr, crValue, crMask);
 		retval = count;
 	} else {
-		skb = bt_skb_alloc(count-1, GFP_ATOMIC);
-		bt_cb(skb)->pkt_type = buf[0];
-		memcpy(&skb->data[0], &buf[1], count-1);
-		skb->len = count-1;
+		if (waiting_for_hci_without_packet_type == 1 && count == 1) {
+			pr_warn("%s: Waiting for hci_without_packet_type, but receive data count is 1!", __func__);
+			pr_warn("%s: Treat this packet as packet_type", __func__);
+			retval = copy_from_user(&hci_packet_type, &buf[0], 1);
+			waiting_for_hci_without_packet_type = 1;
+			retval = 1;
+			goto OUT;
+		}
+
+		if (waiting_for_hci_without_packet_type == 0) {
+			if (count == 1) {
+				retval = copy_from_user(&hci_packet_type, &buf[0], 1);
+				waiting_for_hci_without_packet_type = 1;
+				retval = 1;
+				goto OUT;
+			}
+		}
+
+		if (waiting_for_hci_without_packet_type) {
+			copy_size = count + 1;
+			skb = bt_skb_alloc(copy_size-1, GFP_ATOMIC);
+			bt_cb(skb)->pkt_type = hci_packet_type;
+			memcpy(&skb->data[0], &buf[0], copy_size-1);
+		} else {
+			copy_size = count;
+			skb = bt_skb_alloc(copy_size-1, GFP_ATOMIC);
+			bt_cb(skb)->pkt_type = buf[0];
+			memcpy(&skb->data[0], &buf[1], copy_size-1);
+		}
+
+
+		skb->len = copy_size-1;
 		skb_queue_tail(&g_priv->adapter->tx_queue, skb);
 		wake_up_interruptible(&g_priv->main_thread.wait_q);
 
-		retval = count;
+		retval = copy_size;
+
+		if (waiting_for_hci_without_packet_type) {
+			hci_packet_type = 0xff;
+			waiting_for_hci_without_packet_type = 0;
+			if (retval > 0)
+				retval -= 1;
+		}
 	}
+
+OUT:
 
 	pr_debug("%s end\n", __func__);
 	return retval;
@@ -2672,6 +3553,9 @@ ssize_t btmtk_fops_read(struct file *filp, char __user *buf,
 			size_t count, loff_t *f_pos)
 {
 	struct sk_buff *skb = NULL;
+	int copyLen = 0;
+	u8 hwerr_event[] = { 0x04, 0x10, 0x01, 0xff };
+	static int send_hw_err_event_count;
 
 	if (!probe_ready) {
 		pr_err("%s probe_ready is %d return\n",
@@ -2687,6 +3571,39 @@ ssize_t btmtk_fops_read(struct file *filp, char __user *buf,
 	if (g_priv->adapter->fops_mode == 0) {
 		pr_info("%s fops_mode is 0\n", __func__);
 		return -EFAULT;
+	}
+
+	if (need_reset_stack == 1) {
+		pr_warn("%s: Reset BT stack", __func__);
+		pr_warn("%s: go if send_hw_err_event_count %d", __func__, send_hw_err_event_count);
+		if (send_hw_err_event_count < sizeof(hwerr_event)) {
+			if (count < (sizeof(hwerr_event) - send_hw_err_event_count)) {
+				copyLen = count;
+				pr_info("call wake_up_interruptible");
+				wake_up_interruptible(&inq);
+			} else
+				copyLen = (sizeof(hwerr_event) - send_hw_err_event_count);
+			pr_warn("%s: in if copyLen = %d", __func__, copyLen);
+			if (copy_to_user(buf, hwerr_event + send_hw_err_event_count, copyLen)) {
+				pr_err("send_hw_err_event_count %d copy to user fail, count = %d, go out",
+					send_hw_err_event_count, copyLen);
+				copyLen = -EFAULT;
+				goto OUT;
+			}
+			send_hw_err_event_count += copyLen;
+			pr_warn("%s: in if send_hw_err_event_count = %d", __func__, send_hw_err_event_count);
+			if (send_hw_err_event_count >= sizeof(hwerr_event)) {
+				send_hw_err_event_count  = 0;
+				pr_warn("%s: set need_reset_stack=0", __func__);
+				need_reset_stack = 0;
+			}
+			pr_warn("%s: set call up", __func__);
+			goto OUT;
+		} else {
+			pr_warn("%s: xx set copyLen = -EFAULT", __func__);
+			copyLen = -EFAULT;
+			goto OUT;
+		}
 	}
 
 	lock_unsleepable_lock(&(metabuffer.spin_lock));
@@ -2712,6 +3629,7 @@ ssize_t btmtk_fops_read(struct file *filp, char __user *buf,
 			pr_info("%s skb=NULL break\n", __func__);
 			break;
 		}
+
 #if 0
 		pr_debug("%s pkt_type %d metabuffer.buffer %d",
 			__func__, bt_cb(skb)->pkt_type,
@@ -2729,6 +3647,10 @@ ssize_t btmtk_fops_read(struct file *filp, char __user *buf,
 	unlock_unsleepable_lock(&(metabuffer.spin_lock));
 
 	return btmtk_sdio_pull_data_from_metabuffer(buf, count);
+
+OUT:
+	return copyLen;
+
 }
 
 static int btmtk_fops_fasync(int fd, struct file *file, int on)
@@ -2831,6 +3753,8 @@ static ssize_t btmtk_fops_writefwlog(
 
 	memset(i_fwlog_buf, 0, HCI_MAX_COMMAND_BUF_SIZE);
 	memset(o_fwlog_buf, 0, HCI_MAX_COMMAND_SIZE);
+
+	btmtk_sdio_set_own_back(DRIVER_OWN);
 
 	if (g_priv == NULL) {
 		pr_info("%s g_priv is NULL\n", __func__);
@@ -3114,32 +4038,54 @@ static void BTMTK_exit(void)
 	dev_t dev = MKDEV(BTMTK_major, 0);
 	dev_t devIDfwlog = g_devIDfwlog;
 
-	pr_info("BTMTK_exit\n");
+	pr_info("%s\n", __func__);
+	if (g_card) {
+		pr_info("%s 1\n", __func__);
+		if (g_card->woble_setting_file_name) {
+			pr_info("%s 2\n", __func__);
+			kfree(g_card->woble_setting_file_name);
+			pr_info("%s 3\n", __func__);
+			pr_info("free woble_setting_file_name done\n");
+		} else {
+			pr_err("%s no free woble_setting_file_name, g_card is not null\n", __func__);
+			pr_err("%s woble_setting_file_name is null\n", __func__);
+		}
+	} else
+		pr_err("no free woble_setting_file_name, g_card is null\n");
 
+#if (SUPPORT_UNIFY_WOBLE & SUPPORT_ANDROID)
+		pr_info("%s 4\n", __func__);
+		if (g_card)
+			wake_lock_destroy(&g_card->woble_wlock);
+		else
+			pr_err("%s:g_data is NULL, no destroy woble_wlock", __func__);
+#endif
+
+	pr_info("%s 5\n", __func__);
 	if (pBTDevfwlog) {
+		pr_info("%s 6\n", __func__);
 		device_destroy(pBTClass, devIDfwlog);
 		pBTDevfwlog = NULL;
 	}
-
+	pr_info("%s 7\n", __func__);
 	if (pBTDev) {
 		device_destroy(pBTClass, dev);
 		pBTDev = NULL;
 	}
-
+	pr_info("%s 8\n", __func__);
 	if (pBTClass) {
 		class_destroy(pBTClass);
 		pBTClass = NULL;
 	}
-
+	pr_info("%s 9\n", __func__);
 	cdev_del(&BTMTK_cdev);
+	pr_info("%s 10\n", __func__);
 	unregister_chrdev_region(dev, 1);
 	pr_info("%s driver removed.\n", BT_DRIVER_NAME);
 }
 
-static int __init btmtk_sdio_init_module(void)
+static int btmtk_sdio_allocate_memory(void)
 {
-	BTMTK_init();
-
 	if (txbuf == NULL) {
 		txbuf = kmalloc(MTK_TXDATA_SIZE, GFP_ATOMIC);
 		memset(txbuf, 0, MTK_TXDATA_SIZE);
@@ -3150,21 +4096,33 @@ static int __init btmtk_sdio_init_module(void)
 		memset(rxbuf, 0, MTK_RXDATA_SIZE);
 	}
 
+	return 0;
+}
+
+static int btmtk_sdio_free_memory(void)
+{
+	kfree(txbuf);
+
+	kfree(rxbuf);
+
+	kfree(fw_dump_ptr);
+
+	return 0;
+}
+
+static int __init btmtk_sdio_init_module(void)
+{
+	BTMTK_init();
+
+	if (btmtk_sdio_allocate_memory() < 0) {
+		pr_err("%s: allocate memory failed!", __func__);
+		return -ENOMEM;
+	}
+
 	if (sdio_register_driver(&bt_mtk_sdio) != 0) {
 		pr_err("SDIO Driver Registration Failed\n");
 		return -ENODEV;
 	}
-#ifdef BT_SUPPORT_PMU_EN_CTRL
-    /* Pull PMU_EN to high */
-    if (!cnnPmuStatusGet()) {
-        cnnPmuPullUp();
-    }
-#endif
-
-#ifdef BT_DRIVER_BUILD_MODULE
-    /* Trigger SDIO BUS Rescan in ko module  */
-    sdio_card_detect(1);
-#endif
 
 	pr_info("SDIO Driver Registration Success\n");
 
@@ -3178,14 +4136,9 @@ static void __exit btmtk_sdio_exit_module(void)
 {
 	/* Set the flag as user is removing this module. */
 	user_rmmod = 1;
-
 	BTMTK_exit();
-
 	sdio_unregister_driver(&bt_mtk_sdio);
-
-	kfree(txbuf);
-
-	kfree(rxbuf);
+	btmtk_sdio_free_memory();
 }
 
 module_init(btmtk_sdio_init_module);

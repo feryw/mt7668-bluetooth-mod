@@ -1,15 +1,16 @@
 /*
-*  Copyright (c) 2016 MediaTek Inc.
-*
-*  This program is free software; you can redistribute it and/or modify
-*  it under the terms of the GNU General Public License version 2 as
-*  published by the Free Software Foundation.
-*
-*  This program is distributed in the hope that it will be useful,
-*  but WITHOUT ANY WARRANTY; without even the implied warranty of
-*  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-*  GNU General Public License for more details.
-*/
+ *  Copyright (c) 2016,2017 MediaTek Inc.
+ *
+ *  This program is free software; you can redistribute it and/or modify
+ *  it under the terms of the GNU General Public License version 2 as
+ *  published by the Free Software Foundation.
+ *
+ *  This program is distributed in the hope that it will be useful,
+ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+ *  See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ */
+
 #ifndef __BTMTK_CONFIG_H__
 #define __BTMTK_CONFIG_H__
 
@@ -39,22 +40,7 @@
  */
 /* #define BTMTK_LOG_PATH	"/data/misc/bluedroid/" */
 
-/**
- * USB device ID configureation
- */
-static struct usb_device_id btmtk_usb_table[] = {
-#if SUPPORT_MT7662
-	{USB_DEVICE_AND_INTERFACE_INFO(0x0e8d, 0x7662, 0xe0, 0x01, 0x01), .bInterfaceNumber = 0},	/* MT7662U */
-	{USB_DEVICE_AND_INTERFACE_INFO(0x0e8d, 0x7632, 0xe0, 0x01, 0x01), .bInterfaceNumber = 0},	/* MT7632U */
-	{USB_DEVICE_AND_INTERFACE_INFO(0x0e8d, 0x76a0, 0xe0, 0x01, 0x01), .bInterfaceNumber = 0},	/* MT7662T */
-	{USB_DEVICE_AND_INTERFACE_INFO(0x0e8d, 0x76a1, 0xe0, 0x01, 0x01), .bInterfaceNumber = 0},	/* MT7632T */
-#endif
 
-#if SUPPORT_MT7668
-	{USB_DEVICE_AND_INTERFACE_INFO(0x0e8d, 0x7668, 0xe0, 0x01, 0x01), .bInterfaceNumber = 0},
-#endif
-	{}
-};
 
 /**
  * Fixed STPBT Major Device Id
@@ -72,10 +58,10 @@ static struct usb_device_id btmtk_usb_table[] = {
 /**
  * WoBLE by BLE RC
  */
-#ifndef SUPPORT_LEGACY_WOBLE
-	#define SUPPORT_LEGACY_WOBLE 0
-	#define BT_RC_VENDOR_DEFAULT 1
-	#define BT_RC_VENDOR_S0 0
-#endif
+#define SUPPORT_ANDROID 0 /*Linux build fail due to wake_lock, please set SUPPORT_ANDROID 0 for Linux*/
+#define SUPPORT_UNIFY_WOBLE 1
+#define SUPPORT_LEGACY_WOBLE 0
+#define BT_RC_VENDOR_DEFAULT 1
+#define BT_RC_VENDOR_S0 0
 
 #endif /* __BTMTK_CONFIG_H__ */

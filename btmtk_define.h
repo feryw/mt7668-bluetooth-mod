@@ -1,15 +1,16 @@
 /*
-*  Copyright (c) 2016 MediaTek Inc.
-*
-*  This program is free software; you can redistribute it and/or modify
-*  it under the terms of the GNU General Public License version 2 as
-*  published by the Free Software Foundation.
-*
-*  This program is distributed in the hope that it will be useful,
-*  but WITHOUT ANY WARRANTY; without even the implied warranty of
-*  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-*  GNU General Public License for more details.
-*/
+ *  Copyright (c) 2016,2017 MediaTek Inc.
+ *
+ *  This program is free software; you can redistribute it and/or modify
+ *  it under the terms of the GNU General Public License version 2 as
+ *  published by the Free Software Foundation.
+ *
+ *  This program is distributed in the hope that it will be useful,
+ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+ *  See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ */
+
 #ifndef __BTMTK_DEFINE_H__
 #define __BTMTK_DEFINE_H__
 
@@ -67,6 +68,32 @@ extern u8 btmtk_log_lvl;
 		}								\
 	} while (0)
 
+#define BTSDIO_INFO_RAW(p, l, fmt, ...)						\
+	do {									\
+		{			\
+			int raw_count = 0;					\
+			const unsigned char *ptr = p;				\
+			pr_info("[btmtk_info] "fmt, ##__VA_ARGS__);		\
+			for (raw_count = 0; raw_count <= l; ++raw_count) {	\
+				pr_info(" %02X", ptr[raw_count]);		\
+			}							\
+			pr_info("\n");						\
+		}								\
+	} while (0)
+
+#define BTSDIO_DEBUG_RAW(p, l, fmt, ...)						\
+	do {									\
+		{			\
+			int raw_count = 0;					\
+			const unsigned char *ptr = p;				\
+			pr_debug("[btmtk_info] "fmt, ##__VA_ARGS__);		\
+			for (raw_count = 0; raw_count <= l; ++raw_count) {	\
+				pr_debug(" %02X", ptr[raw_count]);		\
+			}							\
+			pr_debug("\n");						\
+		}								\
+	} while (0)
+
 #else /* CONFIG_DEBUG_FS */
 
 #define BTUSB_ERR(fmt, ...)	 pr_warn("[btmtk_err] "fmt"\n", ##__VA_ARGS__)
@@ -74,6 +101,7 @@ extern u8 btmtk_log_lvl;
 #define BTUSB_INFO(fmt, ...)	pr_warn("[btmtk_info] "fmt"\n", ##__VA_ARGS__)
 #define BTUSB_DBG(fmt, ...)
 #define BTUSB_DBG_RAW(p, l, fmt, ...)
+#define BTUSB_INFO_RAW(p, l, fmt, ...)
 
 #endif /* CONFIG_DEBUG_FS */
 
@@ -126,6 +154,7 @@ extern u8 btmtk_log_lvl;
 #define USB_CTRL_IO_TIMO	100
 #define USB_INTR_MSG_TIMO	2000
 
+
 /**
  * USB request type definition
  */
@@ -153,7 +182,7 @@ extern u8 btmtk_log_lvl;
 #define PATCH_PHASE2		2
 #define PATCH_PHASE3		3
 
-#define META_BUFFER_SIZE	(1024 * 500)
+
 #define USB_IO_BUF_SIZE		(HCI_MAX_EVENT_SIZE > 256 ? HCI_MAX_EVENT_SIZE : 256)
 #define HCI_SNOOP_ENTRY_NUM	30
 #define HCI_SNOOP_BUF_SIZE	32
@@ -174,5 +203,7 @@ extern u8 btmtk_log_lvl;
  * Maximum rom patch file name length
  */
 #define MAX_BIN_FILE_NAME_LEN 32
+
+
 
 #endif /* __BTMTK_DEFINE_H__ */

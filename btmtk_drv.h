@@ -1,21 +1,14 @@
 /*
- * Mediatek Bluetooth driver: global definitions & declarations
+ *  Copyright (c) 2016,2017 MediaTek Inc.
  *
- * Copyright (C) 2017, Mediatek International Ltd.
+ *  This program is free software; you can redistribute it and/or modify
+ *  it under the terms of the GNU General Public License version 2 as
+ *  published by the Free Software Foundation.
  *
- * This software file (the "File") is distributed by Mediatek International
- * Ltd. under the terms of the GNU General Public License Version 2, June 1991
- * (the "License").  You may use, redistribute and/or modify this File in
- * accordance with the terms and conditions of the License, a copy of which
- * is available by writing to the Free Software Foundation, Inc.,
- * On the worldwide web at http://www.gnu.org/licenses/old-licenses/gpl-2.0.txt.
- *
- *
- * THE FILE IS DISTRIBUTED AS-IS, WITHOUT WARRANTY OF ANY KIND, AND THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE
- * ARE EXPRESSLY DISCLAIMED.  The License provides additional details about
- * this warranty disclaimer.
- *
+ *  This program is distributed in the hope that it will be useful,
+ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+ *  See http://www.gnu.org/licenses/gpl-2.0.html for more details.
  */
 
 #ifndef _BTMTK_DRV_H_
@@ -43,11 +36,11 @@
 #define BTMTK_BIN_FILE_MODE 1
 #if BTMTK_BIN_FILE_MODE
 /** For 7668 please storage cfg/bin file in ${firmware} */
-#define E2P_ACCESS_MODE_SWITCHER_7668	"bt.cfg"
-#define E2P_BIN_FILE_7668		"EEPROM_MT7668.bin"
+#define E2P_ACCESS_MODE_SWITCHER	"wifi.cfg"
+#define E2P_BIN_FILE			"EEPROM_MT%X.bin"
 
-#define E2P_MODE	"E2pAccessMode"
-#define BIN_FILE_MODE	'4'
+#define E2P_MODE	"EfuseBufferModeCal"
+#define BIN_FILE_MODE	'1'
 #endif
 
 enum rdwr_status {
@@ -179,6 +172,9 @@ struct btmtk_private {
 
 #define FW_DUMP_FILE_NAME_SIZE     64
 
+#define EVENT_COMPARE_SIZE     64
+
+
 /* #define SAVE_FW_DUMP_IN_KERNEL     1 */
 
 /* stpbt device node */
@@ -228,7 +224,7 @@ struct ring_buffer {
 #define FIXED_STPBT_MAJOR_DEV_ID 111
 
 
-#define FW_DUMP_FILE_NAME "/tmp/log"
+
 #define FW_DUMP_END_EVENT "coredump end"
 
 #endif

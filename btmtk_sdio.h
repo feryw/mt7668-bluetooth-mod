@@ -1,29 +1,26 @@
 /*
- * Mediatek BT-over-SDIO driver: SDIO interface related definitions
+ *  Copyright (c) 2016,2017 MediaTek Inc.
  *
- * Copyright (C) 2017, Mediatek International Ltd.
+ *  This program is free software; you can redistribute it and/or modify
+ *  it under the terms of the GNU General Public License version 2 as
+ *  published by the Free Software Foundation.
  *
- * This software file (the "File") is distributed by Mediatek International
- * Ltd. under the terms of the GNU General Public License Version 2, June 1991
- * (the "License").  You may use, redistribute and/or modify this File in
- * accordance with the terms and conditions of the License, a copy of which
- * is available by writing to the Free Software Foundation, Inc.,
- * On the worldwide web at http://www.gnu.org/licenses/old-licenses/gpl-2.0.txt.
- *
- *
- * THE FILE IS DISTRIBUTED AS-IS, WITHOUT WARRANTY OF ANY KIND, AND THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE
- * ARE EXPRESSLY DISCLAIMED.  The License provides additional details about
- * this warranty disclaimer.
- *
+ *  This program is distributed in the hope that it will be useful,
+ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+ *  See http://www.gnu.org/licenses/gpl-2.0.html for more details.
  */
 
 #ifndef _BTMTK_SDIO_H_
 #define _BTMTK_SDIO_H_
+#include "btmtk_config.h"
 
-#define VERSION "v0.0.0.32"
+
+#define VERSION "v0.0.0.38_2017121801"
 
 #define SDIO_HEADER_LEN                 4
+
+#define BD_ADDRESS_SIZE 6
 
 #define DUMP_HCI_LOG_FILE_NAME          "/sys/hcilog"
 /* SD block size can not bigger than 64 due to buf size limit in firmware */
@@ -119,6 +116,18 @@ struct btmtk_sdio_card_reg {
 	u8 fw_dump_start;
 	u8 fw_dump_end;
 	u8 func_num;
+	u32 chip_id;
+};
+
+#define WOBLE_SETTING_FILE_NAME "woble_setting.bin"
+#define WOBLE_SETTING_COUNT 10
+
+#define WOBLE_FAIL -10
+
+
+struct woble_setting_struct {
+	char	*content;	/* APCF conecnt or radio off content */
+	int	length;		/* APCF conecnt or radio off content of length */
 };
 
 struct btmtk_sdio_card {
@@ -133,6 +142,35 @@ struct btmtk_sdio_card {
 	u16 sd_blksz_fw_dl;
 	u8 rx_unit;
 	struct btmtk_private *priv;
+
+
+	unsigned char		*woble_setting;
+	unsigned char		*woble_setting_file_name;
+	unsigned int		woble_setting_len;
+
+	unsigned int		chip_id;
+	struct woble_setting_struct		woble_setting_apcf[WOBLE_SETTING_COUNT];
+	struct woble_setting_struct		woble_setting_apcf_fill_mac[WOBLE_SETTING_COUNT];
+	struct woble_setting_struct		woble_setting_apcf_fill_mac_location[WOBLE_SETTING_COUNT];
+
+	struct woble_setting_struct		woble_setting_radio_off[WOBLE_SETTING_COUNT];
+	struct woble_setting_struct		woble_setting_radio_off_status_event[WOBLE_SETTING_COUNT];
+	/* complete event */
+	struct woble_setting_struct		woble_setting_radio_off_comp_event[WOBLE_SETTING_COUNT];
+
+	struct woble_setting_struct		woble_setting_radio_on[WOBLE_SETTING_COUNT];
+	struct woble_setting_struct		woble_setting_radio_on_status_event[WOBLE_SETTING_COUNT];
+	struct woble_setting_struct		woble_setting_radio_on_comp_event[WOBLE_SETTING_COUNT];
+
+	int		suspend_count;
+	/* set apcf after resume(radio on) */
+	struct woble_setting_struct		woble_setting_apcf_resume[WOBLE_SETTING_COUNT];
+	struct woble_setting_struct		woble_setting_apcf_resume_event[WOBLE_SETTING_COUNT];
+	unsigned char					bdaddr[BD_ADDRESS_SIZE];
+	unsigned int					woble_need_trigger_coredump;
+#if (SUPPORT_UNIFY_WOBLE & SUPPORT_ANDROID)
+	struct					wake_lock woble_wlock;
+#endif
 };
 struct btmtk_sdio_device {
 	const char *helper;
@@ -243,5 +281,45 @@ extern unsigned char probe_counter;
 extern unsigned char *txbuf;
 extern u8 probe_ready;
 
-#endif
+enum {
+	BTMTK_WOBLE_STATE_UNKNOWN,
+	BTMTK_WOBLE_STATE_SUSPEND,
+	BTMTK_WOBLE_STATE_RESUME,
+	BTMTK_WOBLE_STATE_DUMPING,
+	BTMTK_WOBLE_STATE_DUMPEND,
+	BTMTK_WOBLE_STATE_NEEDRESET_STACK,
+};
 
+enum {
+	BTMTK_SDIO_EVENT_COMPARE_STATE_UNKNOWN,
+	BTMTK_SDIO_EVENT_COMPARE_STATE_NOTHING_NEED_COMPARE,
+	BTMTK_SDIO_EVENT_COMPARE_STATE_NEED_COMPARE,
+	BTMTK_SDIO_EVENT_COMPARE_STATE_COMPARE_SUCCESS,
+};
+
+
+/**
+ * Maximum rom patch file name length
+ */
+#define MAX_BIN_FILE_NAME_LEN	32
+
+
+#define COMPARE_FAIL				-1
+#define COMPARE_SUCCESS				1
+#define WOBLE_COMP_EVENT_TIMO		5000
+
+
+/**
+ * Inline functions
+ */
+static inline int is_support_unify_woble(struct btmtk_sdio_card *data)
+{
+#if SUPPORT_UNIFY_WOBLE
+	return ((data->chip_id & 0xffff) == 0x7668);
+#else
+	return 0;
+#endif
+}
+
+
+#endif
