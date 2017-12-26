@@ -59,7 +59,7 @@
  * WoBLE by BLE RC
  */
 #define SUPPORT_ANDROID 0 /*Linux build fail due to wake_lock, please set SUPPORT_ANDROID 0 for Linux*/
-#define SUPPORT_UNIFY_WOBLE 1
+#define SUPPORT_UNIFY_WOBLE 0
 #define SUPPORT_LEGACY_WOBLE 0
 #define BT_RC_VENDOR_DEFAULT 1
 #define BT_RC_VENDOR_S0 0

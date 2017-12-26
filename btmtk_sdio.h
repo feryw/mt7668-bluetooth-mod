@@ -16,7 +16,7 @@
 #include "btmtk_config.h"
 
 
-#define VERSION "v0.0.0.38_2017121801"
+#define VERSION "v0.0.0.40_2017122201"
 
 #define SDIO_HEADER_LEN                 4
 
