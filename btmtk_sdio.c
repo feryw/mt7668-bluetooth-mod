@@ -233,6 +233,7 @@ static const struct btmtk_sdio_device btmtk_sdio_7666 = {
 
 unsigned char *txbuf;
 static unsigned char *rxbuf;
+static unsigned char *userbuf;
 static u32 rx_length;
 static struct btmtk_sdio_card *g_card;
 
@@ -3512,7 +3513,10 @@ ssize_t btmtk_fops_write(struct file *filp, const char __user *buf,
 			pr_info("%d %02X", i, buf[i]);
 	}
 #endif
-	if (buf[0] == 0x7) {
+
+	copy_from_user(userbuf, buf, count);
+
+	if (userbuf[0] == 0x7) {
 		/* write CR */
 		if (count < 15) {
 			pr_info("%s count=%zd less than 15, error\n",
@@ -3520,12 +3524,12 @@ ssize_t btmtk_fops_write(struct file *filp, const char __user *buf,
 			return -EFAULT;
 		}
 
-		crAddr = (buf[3]&0xff) + ((buf[4]&0xff)<<8)
-			+ ((buf[5]&0xff)<<16) + ((buf[6]&0xff)<<24);
-		crValue = (buf[7]&0xff) + ((buf[8]&0xff)<<8)
-			+ ((buf[9]&0xff)<<16) + ((buf[10]&0xff)<<24);
-		crMask = (buf[11]&0xff) + ((buf[12]&0xff)<<8)
-			+ ((buf[13]&0xff)<<16) + ((buf[14]&0xff)<<24);
+		crAddr = (userbuf[3]&0xff) + ((userbuf[4]&0xff)<<8)
+			+ ((userbuf[5]&0xff)<<16) + ((userbuf[6]&0xff)<<24);
+		crValue = (userbuf[7]&0xff) + ((userbuf[8]&0xff)<<8)
+			+ ((userbuf[9]&0xff)<<16) + ((userbuf[10]&0xff)<<24);
+		crMask = (userbuf[11]&0xff) + ((userbuf[12]&0xff)<<8)
+			+ ((userbuf[13]&0xff)<<16) + ((userbuf[14]&0xff)<<24);
 
 		pr_info("%s crAddr=0x%08x crValue=0x%08x crMask=0x%08x\n",
 			__func__, crAddr, crValue, crMask);
@@ -3535,7 +3539,7 @@ ssize_t btmtk_fops_write(struct file *filp, const char __user *buf,
 			crAddr, crValue);
 		btmtk_sdio_writel(crAddr, crValue);
 		retval = count;
-	} else if (buf[0] == 0x8) {
+	} else if (userbuf[0] == 0x8) {
 		/* read CR */
 		if (count < 16) {
 			pr_info("%s count=%zd less than 15, error\n",
@@ -3543,10 +3547,10 @@ ssize_t btmtk_fops_write(struct file *filp, const char __user *buf,
 			return -EFAULT;
 		}
 
-		crAddr = (buf[3]&0xff) + ((buf[4]&0xff)<<8) +
-			((buf[5]&0xff)<<16) + ((buf[6]&0xff)<<24);
-		crMask = (buf[11]&0xff) + ((buf[12]&0xff)<<8) +
-			((buf[13]&0xff)<<16) + ((buf[14]&0xff)<<24);
+		crAddr = (userbuf[3]&0xff) + ((userbuf[4]&0xff)<<8) +
+			((userbuf[5]&0xff)<<16) + ((userbuf[6]&0xff)<<24);
+		crMask = (userbuf[11]&0xff) + ((userbuf[12]&0xff)<<8) +
+			((userbuf[13]&0xff)<<16) + ((userbuf[14]&0xff)<<24);
 
 		btmtk_sdio_readl(crAddr, &crValue);
 		pr_info("%s read crAddr=0x%08x crValue=0x%08x crMask=0x%08x\n",
@@ -3556,7 +3560,7 @@ ssize_t btmtk_fops_write(struct file *filp, const char __user *buf,
 		if (waiting_for_hci_without_packet_type == 1 && count == 1) {
 			pr_warn("%s: Waiting for hci_without_packet_type, but receive data count is 1!", __func__);
 			pr_warn("%s: Treat this packet as packet_type", __func__);
-			retval = copy_from_user(&hci_packet_type, &buf[0], 1);
+			retval = memcpy(&hci_packet_type, &userbuf[0], 1);
 			waiting_for_hci_without_packet_type = 1;
 			retval = 1;
 			goto OUT;
@@ -3564,7 +3568,7 @@ ssize_t btmtk_fops_write(struct file *filp, const char __user *buf,
 
 		if (waiting_for_hci_without_packet_type == 0) {
 			if (count == 1) {
-				retval = copy_from_user(&hci_packet_type, &buf[0], 1);
+				retval = memcpy(&hci_packet_type, &userbuf[0], 1);
 				waiting_for_hci_without_packet_type = 1;
 				retval = 1;
 				goto OUT;
@@ -3575,12 +3579,12 @@ ssize_t btmtk_fops_write(struct file *filp, const char __user *buf,
 			copy_size = count + 1;
 			skb = bt_skb_alloc(copy_size-1, GFP_ATOMIC);
 			bt_cb(skb)->pkt_type = hci_packet_type;
-			memcpy(&skb->data[0], &buf[0], copy_size-1);
+			memcpy(&skb->data[0], &userbuf[0], copy_size-1);
 		} else {
 			copy_size = count;
 			skb = bt_skb_alloc(copy_size-1, GFP_ATOMIC);
-			bt_cb(skb)->pkt_type = buf[0];
-			memcpy(&skb->data[0], &buf[1], copy_size-1);
+			bt_cb(skb)->pkt_type = userbuf[0];
+			memcpy(&skb->data[0], &userbuf[1], copy_size-1);
 		}
 
 
@@ -3979,6 +3983,7 @@ static int BTMTK_init(void)
 	g_card = NULL;
 	txbuf = NULL;
 	rxbuf = NULL;
+	userbuf = NULL;
 	rx_length = 0;
 
 #if SAVE_FW_DUMP_IN_KERNEL
@@ -4151,6 +4156,11 @@ static int btmtk_sdio_allocate_memory(void)
 		memset(rxbuf, 0, MTK_RXDATA_SIZE);
 	}
 
+	if (userbuf == NULL) {
+		userbuf = kmalloc(MTK_TXDATA_SIZE, GFP_ATOMIC);
+		memset(userbuf, 0, MTK_TXDATA_SIZE);
+	}
+
 	return 0;
 }
 
@@ -4159,6 +4169,8 @@ static int btmtk_sdio_free_memory(void)
 	kfree(txbuf);
 
 	kfree(rxbuf);
+
+	kfree(userbuf);
 
 	kfree(fw_dump_ptr);
 
