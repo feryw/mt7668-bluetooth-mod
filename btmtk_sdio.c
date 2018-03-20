@@ -32,9 +32,21 @@
 #include <linux/kallsyms.h>
 #include <linux/device.h>
 
+/* Define for proce node */
+#include <linux/proc_fs.h>
+#include <linux/seq_file.h>
+
 #include "btmtk_define.h"
 #include "btmtk_drv.h"
 #include "btmtk_sdio.h"
+
+#if SUPPORT_EINT
+/* Used for WoBLE on EINT */
+#include <linux/of.h>
+#include <linux/of_address.h>
+#include <linux/of_irq.h>
+#endif
+
 #ifdef BT_SUPPORT_PMU_EN_CTRL
 #include "mt7668_wmt.h"
 #endif
@@ -81,7 +93,16 @@ struct btmtk_private *g_priv;
 const u8 READ_ADDRESS_EVENT[] = { 0x0e, 0x0a, 0x01, 0x09, 0x10, 0x00 };
 
 static struct ring_buffer metabuffer;
+static struct ring_buffer fwlog_metabuffer;
 u8 probe_ready;
+/* record firmware version */
+static char fw_version_str[FW_VERSION_BUF_SIZE];
+static struct proc_dir_entry *g_proc_dir;
+
+/** read_write for proc */
+static int btmtk_proc_show(struct seq_file *m, void *v);
+static int btmtk_proc_open(struct inode *inode, struct  file *file);
+static void btmtk_proc_create_new_entry(void);
 
 static char fw_dump_file_name[FW_DUMP_FILE_NAME_SIZE] = {0};
 static char event_need_compare[EVENT_COMPARE_SIZE] = {0};
@@ -89,8 +110,6 @@ static char event_need_compare_len;
 static char event_compare_status;
 /*add special header in the beginning of even, stack won't recognize these event*/
 
-struct _OSAL_UNSLEEPABLE_LOCK_ event_compare_status_lock;
-struct _OSAL_UNSLEEPABLE_LOCK_ tx_function_lock;
 
 
 
@@ -112,6 +131,12 @@ int fw_is_coredump_end_packet;
 #else
 	static int	fw_dump_file;
 #endif
+
+const struct file_operations BT_proc_fops = {
+	.open = btmtk_proc_open,
+	.read = seq_read,
+	.release = single_release,
+};
 
 static const struct btmtk_sdio_card_reg btmtk_reg_6630 = {
 	.cfg = 0x03,
@@ -234,12 +259,10 @@ static const struct btmtk_sdio_device btmtk_sdio_7666 = {
 unsigned char *txbuf;
 static unsigned char *rxbuf;
 static unsigned char *userbuf;
+static unsigned char *userbuf_fwlog;
 static u32 rx_length;
 static struct btmtk_sdio_card *g_card;
 
-/*
- * add in include/linux/mmc/sdio_ids.h
- */
 #define SDIO_VENDOR_ID_MEDIATEK 0x037A
 
 static const struct sdio_device_id btmtk_sdio_ids[] = {
@@ -1417,8 +1440,6 @@ static int btmtk_sdio_host_to_card(struct btmtk_private *priv,
 	u8 MultiBluckCount = 0;
 	u8 redundant = 0;
 
-	//lock_unsleepable_lock(&tx_function_lock);
-
 	if (payload != txbuf) {
 		memset(txbuf, 0, MTK_TXDATA_SIZE);
 		memcpy(txbuf, payload, nb);
@@ -1426,7 +1447,6 @@ static int btmtk_sdio_host_to_card(struct btmtk_private *priv,
 
 	if (!card || !card->func) {
 		pr_err("card or function is NULL!\n");
-		//unlock_unsleepable_lock(&tx_function_lock);
 		return -EINVAL;
 	}
 
@@ -1461,7 +1481,6 @@ static int btmtk_sdio_host_to_card(struct btmtk_private *priv,
 
 exit:
 
-	//unlock_unsleepable_lock(&tx_function_lock);
 	return ret;
 }
 
@@ -1676,6 +1695,8 @@ static int btmtk_sdio_send_wohci(u8 type, u32 len, u8 *data)
 {
 	u32 ret = 0;
 	u32 push_in_data_len = 0;
+	u32 MultiBluckCount = 0;
+	u32 redundant = 0;
 	u8 mtk_wmt_header[MTKWMT_HEADER_SIZE] = {0};
 	u8 mtksdio_packet_header[MTK_SDIO_PACKET_HEADER_SIZE] = {0};
 	u8 mtk_tx_data[512] = {0};
@@ -1707,9 +1728,15 @@ static int btmtk_sdio_send_wohci(u8 type, u32 len, u8 *data)
 
 	memcpy(mtk_tx_data+push_in_data_len, data, len);
 	push_in_data_len += len;
+	memcpy(txbuf, mtk_tx_data, push_in_data_len);
+
+	MultiBluckCount = push_in_data_len/4;
+	redundant = push_in_data_len % 4;
+	if (redundant)
+		push_in_data_len = (MultiBluckCount+1)*4;
 
 	sdio_claim_host(g_card->func);
-	ret = sdio_writesb(g_card->func, CTDR, mtk_tx_data, push_in_data_len);
+	ret = sdio_writesb(g_card->func, CTDR, txbuf, push_in_data_len);
 	sdio_release_host(g_card->func);
 
 	pr_info("%s retrun  0x%0x\n", __func__, ret);
@@ -1850,6 +1877,39 @@ static int btmtk_sdio_download_rom_patch(
 
 	pr_debug("%s patch_status %d\n", __func__, patch_status);
 
+	uhwversion = btmtk_sdio_bt_memRegister_read(HW_VERSION);
+	pr_info("%s uhwversion 0x%x\n", __func__, uhwversion);
+
+	if (uhwversion == 0x8A00) {
+		pr_info("%s request_firmware(firmware name %s)\n",
+				__func__, card->firmware);
+		ret = request_firmware(&fw_firmware, card->firmware,
+						&card->func->dev);
+
+		if ((ret < 0) || !fw_firmware) {
+			pr_err("request_firmware(firmware name %s) failed, error code = %d\n",
+					card->firmware,
+					ret);
+			ret = -ENOENT;
+			goto done;
+		}
+	} else {
+		pr_info("%s request_firmware(firmware name %s)\n",
+				__func__, card->firmware1);
+		ret = request_firmware(&fw_firmware,
+				card->firmware1,
+				&card->func->dev);
+
+		if ((ret < 0) || !fw_firmware) {
+			pr_err("request_firmware(firmware name %s) failed, error code = %d\n",
+				card->firmware1, ret);
+			ret = -ENOENT;
+			goto done;
+		}
+	}
+	memset(fw_version_str, 0, FW_VERSION_BUF_SIZE);
+	memcpy(fw_version_str, fw_firmware->data, FW_VERSION_BUF_SIZE - 1);
+
 	if (patch_status == PATCH_IS_DOWNLOAD_BT_OTHER ||
 			patch_status == PATCH_READY) {
 		pr_info("%s patch is ready no need load patch again\n",
@@ -1887,38 +1947,8 @@ static int btmtk_sdio_download_rom_patch(
 
 		ret = btmtk_sdio_set_sleep();
 		btmtk_sdio_set_write_clear();
+		release_firmware(fw_firmware);
 		return ret;
-	}
-
-	uhwversion = btmtk_sdio_bt_memRegister_read(HW_VERSION);
-	pr_info("%s uhwversion 0x%x\n", __func__, uhwversion);
-
-	if (uhwversion == 0x8A00) {
-		pr_info("%s request_firmware(firmware name %s)\n",
-				__func__, card->firmware);
-		ret = request_firmware(&fw_firmware, card->firmware,
-						&card->func->dev);
-
-		if ((ret < 0) || !fw_firmware) {
-			pr_err("request_firmware(firmware name %s) failed, error code = %d\n",
-					card->firmware,
-					ret);
-			ret = -ENOENT;
-			goto done;
-		}
-	} else {
-		pr_info("%s request_firmware(firmware name %s)\n",
-				__func__, card->firmware1);
-		ret = request_firmware(&fw_firmware,
-				card->firmware1,
-				&card->func->dev);
-
-		if ((ret < 0) || !fw_firmware) {
-			pr_err("request_firmware(firmware name %s) failed, error code = %d\n",
-				card->firmware1, ret);
-			ret = -ENOENT;
-			goto done;
-		}
 	}
 
 	firmware = fw_firmware->data;
@@ -1954,6 +1984,7 @@ static int btmtk_sdio_download_rom_patch(
 	pr_info("Patch Ver = 0x%04x\n",
 			((u4PatchVer & 0xff000000) >> 24) |
 			((u4PatchVer & 0x00ff0000) >> 16));
+
 	pr_info("Platform = %c%c%c%c\n",
 			patchHdr->ucPlatform[0],
 			patchHdr->ucPlatform[1],
@@ -2098,11 +2129,13 @@ static int btmtk_sdio_card_to_host(struct btmtk_private *priv, const u8 *event, 
 	int ret = 0;
 	struct sk_buff *skb = NULL;
 	struct sk_buff *fops_skb = NULL;
+	struct sk_buff *fwlog_fops_skb = NULL;
 	u32 type;
 	u32 fourbalignment_len = 0;
 	u32 dump_len = 0;
 	char *core_dump_end = NULL;
 	int i = 0;
+	static int print_dump_data_counter;
 
 #if SUPPORT_FW_DUMP
 	fw_is_coredump_end_packet = false;
@@ -2112,6 +2145,13 @@ static int btmtk_sdio_card_to_host(struct btmtk_private *priv, const u8 *event, 
 					+ rxbuf[SDIO_HEADER_LEN+2];
 			pr_notice("%s get dump length %d\n",
 				__func__, dump_len);
+
+			if (print_dump_data_counter < PRINT_DUMP_COUNT) {
+			    print_dump_data_counter++;
+			    pr_warn("%s : dump %d %s\n",
+			        __func__, print_dump_data_counter, &rxbuf[SDIO_HEADER_LEN+9]);
+			}
+
 			if (rxbuf[SDIO_HEADER_LEN+5] == 0x6F &&
 					rxbuf[SDIO_HEADER_LEN+6] == 0xFC) {
 
@@ -2137,27 +2177,30 @@ static int btmtk_sdio_card_to_host(struct btmtk_private *priv, const u8 *event, 
 							fw_dump_file_name,
 							O_RDWR | O_CREAT,
 							0644);
-					if (fw_dump_file) {
+					print_dump_data_counter = 0;
+					if (!(IS_ERR(fw_dump_file))) {
 						current_fwdump_file_number =
 							probe_counter;
 						pr_warn("%s : open file %s success\n",
 							__func__,
 							fw_dump_file_name);
-					} else
+					} else {
 						pr_warn("%s : open file %s fail\n",
 							__func__,
 							fw_dump_file_name);
+						fw_dump_file = NULL;
+					}
 				/* #endif */
 				}
 				#endif
 				fw_dump_total_read_size += dump_len;
 
 				#if SAVE_FW_DUMP_IN_KERNEL
-				if (fw_dump_file->f_op == NULL)
+				if (fw_dump_file && fw_dump_file->f_op == NULL)
 					pr_warn("%s : fw_dump_file->f_op is NULL\n",
 								__func__);
 
-				if (fw_dump_file->f_op->write == NULL)
+				if (fw_dump_file && fw_dump_file->f_op->write == NULL)
 					pr_warn("%s : fw_dump_file->f_op->write is NULL\n",
 								__func__);
 
@@ -2166,11 +2209,28 @@ static int btmtk_sdio_card_to_host(struct btmtk_private *priv, const u8 *event, 
 					&& fw_dump_file->f_op
 					&& fw_dump_file->f_op->write)
 					fw_dump_file->f_op->write(fw_dump_file,
-						&rxbuf[SDIO_HEADER_LEN+10],
+						&rxbuf[SDIO_HEADER_LEN+9],
 						dump_len,
 						&fw_dump_file->f_pos);
 
 				#endif
+
+				/* This is coredump data, save coredump data to picus_queue */
+				pr_debug("%s : Receive coredump data, move data to fwlog queue for picus", __func__);
+				buf_len = rx_length-(MTK_SDIO_PACKET_HEADER_SIZE+1);
+				lock_unsleepable_lock(&(fwlog_metabuffer.spin_lock));
+				fwlog_fops_skb = bt_skb_alloc(buf_len, GFP_ATOMIC);
+				memcpy(&fwlog_fops_skb->data[0], &rxbuf[MTK_SDIO_PACKET_HEADER_SIZE+5], buf_len);
+				fwlog_fops_skb->len = buf_len;
+				skb_queue_tail(&g_priv->adapter->fwlog_fops_queue, fwlog_fops_skb);
+				pr_debug("%s fwlog_fops_skb length = %d, buf_len = %d\n",
+					__func__, fwlog_fops_skb->len, buf_len);
+				if (skb_queue_empty(&g_priv->adapter->fwlog_fops_queue))
+					pr_warn("%s fwlog_fops_queue is empty empty\n", __func__);
+
+				kfree_skb(skb);
+				wake_up_interruptible(&fw_log_inq);
+				unlock_unsleepable_lock(&(fwlog_metabuffer.spin_lock));
 
 				if (dump_len >= sizeof(FW_DUMP_END_EVENT)) {
 					core_dump_end = strstr(
@@ -2189,6 +2249,31 @@ static int btmtk_sdio_card_to_host(struct btmtk_private *priv, const u8 *event, 
 #if SAVE_FW_DUMP_IN_KERNEL
 FW_DONE:
 #endif
+
+	/*receive picus data to fwlog_queue*/
+	if (rx_length > (SDIO_HEADER_LEN+8)) {
+		dump_len = (rxbuf[SDIO_HEADER_LEN+1]&0x0F) * 256 + rxbuf[SDIO_HEADER_LEN+2];
+		pr_debug("%s This is debug log data, length = %d", __func__, dump_len);
+		if (rxbuf[SDIO_HEADER_LEN+1] == 0xFF && rxbuf[SDIO_HEADER_LEN+3] == 0x50) {
+			/* picus header is 0x50 */
+			pr_debug("%s : This is picus data", __func__);
+			buf_len = rx_length-(MTK_SDIO_PACKET_HEADER_SIZE+1);
+			lock_unsleepable_lock(&(fwlog_metabuffer.spin_lock));
+			fwlog_fops_skb = bt_skb_alloc(buf_len, GFP_ATOMIC);
+			memcpy(&fwlog_fops_skb->data[0], &rxbuf[MTK_SDIO_PACKET_HEADER_SIZE+1], buf_len);
+			fwlog_fops_skb->len = buf_len;
+			skb_queue_tail(&g_priv->adapter->fwlog_fops_queue, fwlog_fops_skb);
+			pr_debug("%s fwlog_fops_skb length = %d, buf_len = %d\n",
+				__func__, fwlog_fops_skb->len, buf_len);
+			if (skb_queue_empty(&g_priv->adapter->fwlog_fops_queue))
+				pr_warn("%s fwlog_fops_queue is empty empty\n", __func__);
+
+			kfree_skb(skb);
+			wake_up_interruptible(&fw_log_inq);
+			unlock_unsleepable_lock(&(fwlog_metabuffer.spin_lock));
+			goto exit;
+		}
+	}
 
 	type = rxbuf[MTK_SDIO_PACKET_HEADER_SIZE];
 
@@ -2245,16 +2330,21 @@ FW_DONE:
 			g_card->bdaddr[0], g_card->bdaddr[1], g_card->bdaddr[2],
 			g_card->bdaddr[3], g_card->bdaddr[4], g_card->bdaddr[5]);
 
-			//event_compare_status = BTMTK_SDIO_EVENT_COMPARE_STATE_COMPARE_SUCCESS;
+			/*
+			 * event_compare_status =
+			 * BTMTK_SDIO_EVENT_COMPARE_STATE_COMPARE_SUCCESS;
+			 */
 		} else
 			pr_debug("%s READ_ADDRESS_EVENT compare fail buf_len %d\n", __func__, buf_len);
 	}
 
-	lock_unsleepable_lock(&(metabuffer.spin_lock));
-	if ((!fw_is_doing_coredump) &
+
+	if ((!fw_is_doing_coredump) &&
 			(!fw_is_coredump_end_packet)) {
 		if (event_compare_status == BTMTK_SDIO_EVENT_COMPARE_STATE_NEED_COMPARE) {
 			/*compare with tx hci cmd*/
+			pr_debug("%s buf_len %d, event_need_compare_len %d\n",
+				__func__, buf_len, event_need_compare_len);
 			if (buf_len >= event_need_compare_len) {
 				if (memcmp(skb->data, event_need_compare, event_need_compare_len) == 0) {
 					event_compare_status = BTMTK_SDIO_EVENT_COMPARE_STATE_COMPARE_SUCCESS;
@@ -2272,16 +2362,18 @@ FW_DONE:
 		memcpy(fops_skb->data, skb->data, buf_len);
 
 		fops_skb->len = buf_len;
+		lock_unsleepable_lock(&(metabuffer.spin_lock));
 		skb_queue_tail(&g_priv->adapter->fops_queue, fops_skb);
 		if (skb_queue_empty(&g_priv->adapter->fops_queue))
 			pr_info("%s fops_queue is empty\n", __func__);
+		unlock_unsleepable_lock(&(metabuffer.spin_lock));
 
 		kfree_skb(skb);
-		unlock_unsleepable_lock(&(metabuffer.spin_lock));
+
 		wake_up_interruptible(&inq);
 		goto exit;
 	}
-	unlock_unsleepable_lock(&(metabuffer.spin_lock));
+
 
 exit:
 	if (ret) {
@@ -2328,14 +2420,12 @@ static int btmtk_sdio_process_int_status(
 		ret = btmtk_sdio_recv_rx_data();
 
 	if (ret == 0) {
-		lock_unsleepable_lock(&event_compare_status_lock);
 		while (rx_length > (MTK_SDIO_PACKET_HEADER_SIZE)) {
 			btmtk_sdio_card_to_host(priv, NULL, -1, 0);
 			u32rxdatacount++;
 			pr_debug("%s u32rxdatacount %d\n",
 				__func__, u32rxdatacount);
 		}
-		unlock_unsleepable_lock(&event_compare_status_lock);
 	}
 
 	btmtk_sdio_enable_interrupt(1);
@@ -2601,17 +2691,19 @@ done:
 }
 
 static int btmtk_sdio_push_data_to_metabuffer(
+						struct ring_buffer *metabuffer,
 						char *data,
 						int len,
-						u8 type)
+						u8 type,
+						bool use_type)
 {
 	int remainLen = 0;
 
-	if (metabuffer.write_p >= metabuffer.read_p)
-		remainLen = metabuffer.write_p - metabuffer.read_p;
+	if (metabuffer->write_p >= metabuffer->read_p)
+		remainLen = metabuffer->write_p - metabuffer->read_p;
 	else
 		remainLen = META_BUFFER_SIZE -
-			(metabuffer.read_p - metabuffer.write_p);
+			(metabuffer->read_p - metabuffer->write_p);
 
 	if ((remainLen + 1 + len) >= META_BUFFER_SIZE) {
 		pr_warn("%s copy copyLen %d > META_BUFFER_SIZE(%d), push back to queue\n",
@@ -2621,73 +2713,128 @@ static int btmtk_sdio_push_data_to_metabuffer(
 		return -1;
 	}
 
-	metabuffer.buffer[metabuffer.write_p] = type;
-	metabuffer.write_p++;
-	if (metabuffer.write_p >= META_BUFFER_SIZE)
-		metabuffer.write_p = 0;
+	if (use_type) {
+		metabuffer->buffer[metabuffer->write_p] = type;
+		metabuffer->write_p++;
+	}
+	if (metabuffer->write_p >= META_BUFFER_SIZE)
+		metabuffer->write_p = 0;
 
-	if (metabuffer.write_p + len <= META_BUFFER_SIZE)
-		memcpy(&metabuffer.buffer[metabuffer.write_p],
+	if (metabuffer->write_p + len <= META_BUFFER_SIZE)
+		memcpy(&metabuffer->buffer[metabuffer->write_p],
 			data,
 			len);
 	else {
-		memcpy(&metabuffer.buffer[metabuffer.write_p],
+		memcpy(&metabuffer->buffer[metabuffer->write_p],
 			data,
-			META_BUFFER_SIZE - metabuffer.write_p);
-		memcpy(metabuffer.buffer,
-			&data[META_BUFFER_SIZE - metabuffer.write_p],
-			len - (META_BUFFER_SIZE - metabuffer.write_p));
+			META_BUFFER_SIZE - metabuffer->write_p);
+		memcpy(metabuffer->buffer,
+			&data[META_BUFFER_SIZE - metabuffer->write_p],
+			len - (META_BUFFER_SIZE - metabuffer->write_p));
 	}
 
-	metabuffer.write_p += len;
-	if (metabuffer.write_p >= META_BUFFER_SIZE)
-		metabuffer.write_p -= META_BUFFER_SIZE;
+	metabuffer->write_p += len;
+	if (metabuffer->write_p >= META_BUFFER_SIZE)
+		metabuffer->write_p -= META_BUFFER_SIZE;
 
 	remainLen += (1 + len);
 	return 0;
 }
 
 static int btmtk_sdio_pull_data_from_metabuffer(
+						struct ring_buffer *metabuffer,
 						char __user *buf,
 						size_t count)
 {
 	int copyLen = 0;
 	unsigned long ret = 0;
 
-	if (metabuffer.write_p >= metabuffer.read_p)
-		copyLen = metabuffer.write_p - metabuffer.read_p;
+	if (metabuffer->write_p >= metabuffer->read_p)
+		copyLen = metabuffer->write_p - metabuffer->read_p;
 	else
 		copyLen = META_BUFFER_SIZE -
-			(metabuffer.read_p - metabuffer.write_p);
+			(metabuffer->read_p - metabuffer->write_p);
 
 	if (copyLen > count)
 		copyLen = count;
 
-	if (metabuffer.read_p + copyLen <= META_BUFFER_SIZE)
+	if (metabuffer->read_p + copyLen <= META_BUFFER_SIZE)
 		ret = copy_to_user(buf,
-				&metabuffer.buffer[metabuffer.read_p],
+				&metabuffer->buffer[metabuffer->read_p],
 				copyLen);
 	else {
 		ret = copy_to_user(buf,
-				&metabuffer.buffer[metabuffer.read_p],
-				META_BUFFER_SIZE - metabuffer.read_p);
+				&metabuffer->buffer[metabuffer->read_p],
+				META_BUFFER_SIZE - metabuffer->read_p);
 		if (!ret)
 			ret = copy_to_user(
-				&buf[META_BUFFER_SIZE - metabuffer.read_p],
-				metabuffer.buffer,
-				copyLen - (META_BUFFER_SIZE-metabuffer.read_p));
+				&buf[META_BUFFER_SIZE - metabuffer->read_p],
+				metabuffer->buffer,
+				copyLen - (META_BUFFER_SIZE-metabuffer->read_p));
 	}
 
 	if (ret)
 		pr_warn("%s copy to user fail, ret %d\n", __func__, (int)ret);
 
-	metabuffer.read_p += (copyLen - ret);
-	if (metabuffer.read_p >= META_BUFFER_SIZE)
-		metabuffer.read_p -= META_BUFFER_SIZE;
+	metabuffer->read_p += (copyLen - ret);
+	if (metabuffer->read_p >= META_BUFFER_SIZE)
+		metabuffer->read_p -= META_BUFFER_SIZE;
 
 	return (copyLen - ret);
 }
+#if SUPPORT_EINT
+static irqreturn_t btmtk_sdio_woble_isr(int irq, void *dev)
+{
+	struct btmtk_sdio_card *data = (struct btmtk_sdio_card *)dev;
+	unsigned long wait_powerkey_time = 0;
 
+	pr_info("%s begin\n", __func__);
+	disable_irq_nosync(data->wobt_irq);
+	atomic_dec(&(data->irq_enable_count));
+	pr_info("%s:disable BT IRQ\n", __func__);
+	pr_info("%s:call wake lock\n", __func__);
+	wait_powerkey_time = msecs_to_jiffies(WAIT_POWERKEY_TIMEOUT);
+	wake_lock_timeout(&data->eint_wlock, wait_powerkey_time);/*10s*/
+	pr_info("%s end\n", __func__);
+	return IRQ_HANDLED;
+}
+
+static int btmtk_sdio_RegisterBTIrq(struct btmtk_sdio_card *data)
+{
+	struct device_node *eint_node = NULL;
+	int interrupts[2];
+
+	eint_node = of_find_compatible_node(NULL, NULL, "mediatek,mt7668_bt_ctrl");
+	pr_info("%s begin\n", __func__);
+	if (eint_node) {
+		pr_info("%s Get mt76xx_bt_ctrl compatible node\n", __func__);
+		data->wobt_irq = irq_of_parse_and_map(eint_node, 0);
+		pr_info("%s wobt_irq number:%d", __func__, data->wobt_irq);
+		if (data->wobt_irq) {
+			of_property_read_u32_array(eint_node, "interrupts",
+						   interrupts, ARRAY_SIZE(interrupts));
+			data->wobt_irqlevel = interrupts[1];
+			if (request_irq(data->wobt_irq, btmtk_sdio_woble_isr,
+					data->wobt_irqlevel, "mt7668_bt_ctrl-eint", data))
+				pr_info("%s WOBTIRQ LINE NOT AVAILABLE!!\n", __func__);
+			else {
+				pr_info("%s disable BT IRQ\n", __func__);
+				disable_irq_nosync(data->wobt_irq);
+			}
+
+		} else
+			pr_info("%s can't find mt76xx_bt_ctrl irq\n", __func__);
+
+	} else {
+		data->wobt_irq = 0;
+		pr_info("%s can't find mt76xx_bt_ctrl compatible node\n", __func__);
+	}
+
+
+	pr_info("btmtk:%s: end\n", __func__);
+	return 0;
+}
+#endif
 static int btmtk_sdio_probe(struct sdio_func *func,
 					const struct sdio_device_id *id)
 {
@@ -2715,6 +2862,10 @@ static int btmtk_sdio_probe(struct sdio_func *func,
 
 	card->func = func;
 	g_card = card;
+
+#if SUPPORT_EINT
+	btmtk_sdio_RegisterBTIrq(card);
+#endif
 
 	if (id->driver_data) {
 		card->helper = data->helper;
@@ -2758,8 +2909,7 @@ static int btmtk_sdio_probe(struct sdio_func *func,
 	btmtk_sdio_set_i2s();
 	/* Move from btmtk_fops_open() */
 	spin_lock_init(&(metabuffer.spin_lock.lock));
-	spin_lock_init(&(event_compare_status_lock.lock));
-	spin_lock_init(&(tx_function_lock.lock));
+	spin_lock_init(&(fwlog_metabuffer.spin_lock.lock));
 	pr_debug("%s spin_lock_init end\n", __func__);
 
 	priv = btmtk_add_card(card);
@@ -2810,6 +2960,14 @@ static int btmtk_sdio_probe(struct sdio_func *func,
 			&g_card->woble_setting_len,
 			g_card);
 	}
+
+#if (SUPPORT_UNIFY_WOBLE & SUPPORT_ANDROID)
+	wake_lock_init(&g_card->woble_wlock, WAKE_LOCK_SUSPEND, "btevent_woble");
+#endif
+
+#if SUPPORT_EINT
+	wake_lock_init(&g_card->eint_wlock, WAKE_LOCK_SUSPEND, "btevent_eint");
+#endif
 
 	pr_info("%s normal end\n", __func__);
 	probe_ready = true;
@@ -2889,6 +3047,11 @@ static int btmtk_sdio_send_hci_cmd(u8 cmd_type, u8 *cmd, int cmd_len,
 	bt_cb(skb)->pkt_type = cmd_type;
 	memcpy(&skb->data[0], cmd, cmd_len);
 	skb->len = cmd_len;
+	if (event) {
+		event_compare_status = BTMTK_SDIO_EVENT_COMPARE_STATE_NEED_COMPARE;
+		memcpy(event_need_compare, event, event_len);
+		event_need_compare_len = event_len;
+	}
 	skb_queue_tail(&g_priv->adapter->tx_queue, skb);
 	wake_up_interruptible(&g_priv->main_thread.wait_q);
 
@@ -2901,18 +3064,14 @@ static int btmtk_sdio_send_hci_cmd(u8 cmd_type, u8 *cmd, int cmd_len,
 		return -1;
 	}
 
-	memcpy(event_need_compare, event, event_len);
-	event_need_compare_len = event_len;
-
 	start_time = jiffies;
-	// check HCI event
+	/* check HCI event */
 	comp_event_timo = jiffies + msecs_to_jiffies(total_timeout);
 	ret = -1;
-	event_compare_status = BTMTK_SDIO_EVENT_COMPARE_STATE_NEED_COMPARE;
-
 	pr_debug("%s event_need_compare_len %d\n", __func__, event_need_compare_len);
+	pr_debug("%s event_compare_status %d\n", __func__, event_compare_status);
 	do {
-		//check if event_compare_success
+		/* check if event_compare_success */
 		if (event_compare_status == BTMTK_SDIO_EVENT_COMPARE_STATE_COMPARE_SUCCESS) {
 			pr_debug("%s compare success\n", __func__);
 			ret = 0;
@@ -3112,8 +3271,8 @@ static int btmtk_sdio_send_unify_woble_suspend_default_cmd(void)
 		0x02, 0x40, 0x5A, 0x02, 0x41, 0x0F };
 	/*u8 status[] = { 0x0F, 0x04, 0x00, 0x01, 0xC9, 0xFC };*/
 	u8 comp_event[] = { 0xE6, 0x02, 0x08, 0x00 };
-	pr_debug("%s: begin", __func__);
 
+	pr_debug("%s: begin", __func__);
 
 	ret = btmtk_sdio_send_hci_cmd(HCI_COMMAND_PKT, cmd,
 				sizeof(cmd),
@@ -3121,7 +3280,7 @@ static int btmtk_sdio_send_unify_woble_suspend_default_cmd(void)
 	if (ret)
 		pr_err("%s: comp_event return error(%d)", __func__, ret);
 
-    return ret;
+	return ret;
 }
 /**
  * Set APCF manufacturer data and filter parameter
@@ -3144,10 +3303,9 @@ static int btmtk_sdio_set_Woble_radio_off(void)
 				pr_err("%s: radio off error", __func__);
 				return ret;
 			}
-		}
-		else
+		} else
 			pr_info("%s: woble_setting_radio_off length is %d", __func__,
-		        g_card->woble_setting_radio_off[0].length);
+				g_card->woble_setting_radio_off[0].length);
 	} else {/* use default */
 		pr_info("%s: use default radio off cmd", __func__);
 		ret = btmtk_sdio_send_unify_woble_suspend_default_cmd();
@@ -3221,7 +3379,8 @@ static int btmtk_sdio_del_Woble_APCF_inde(void)
 	u8 event[] = { 0x0e, 0x07, 0x01, 0x57, 0xfd, 0x00, 0x01, /* 00, 63 */ };
 
 	pr_debug("%s", __func__);
-	ret = btmtk_sdio_send_hci_cmd(HCI_COMMAND_PKT, cmd, sizeof(cmd), event, sizeof(event), WOBLE_COMP_EVENT_TIMO, 1);
+	ret = btmtk_sdio_send_hci_cmd(HCI_COMMAND_PKT, cmd, sizeof(cmd),
+		event, sizeof(event), WOBLE_COMP_EVENT_TIMO, 1);
 
 	if (ret < 0)
 		pr_err("%s: Got error %d", __func__, ret);
@@ -3286,6 +3445,7 @@ static int btmtk_sdio_handle_leaving_WoBLE_state(void)
 
 	return ret;
 }
+
 static int btmtk_sdio_send_apcf_reserved(void)
 {
 	int ret = -1;
@@ -3329,6 +3489,17 @@ static int btmtk_sdio_suspend(struct device *dev)
 	else
 		btmtk_sdio_handle_entering_WoBLE_state();
 
+#if SUPPORT_EINT
+	if (g_card->wobt_irq != 0 && atomic_read(&(g_card->irq_enable_count)) == 0) {
+		pr_info("%s:enable BT IRQ:%d\n", __func__, g_card->wobt_irq);
+		irq_set_irq_wake(g_card->wobt_irq, 1);
+		enable_irq(g_card->wobt_irq);
+		atomic_inc(&(g_card->irq_enable_count));
+	} else
+		pr_info("%s:irq_enable count:%d\n", __func__, atomic_read(&(g_card->irq_enable_count)));
+#endif
+
+
 	if (func) {
 		pm_flags = sdio_get_host_pm_caps(func);
 		pr_debug("%s: suspend: PM flags = 0x%x\n",
@@ -3336,7 +3507,7 @@ static int btmtk_sdio_suspend(struct device *dev)
 		if (!(pm_flags & MMC_PM_KEEP_POWER)) {
 			pr_err("%s: cannot remain alive while suspended\n",
 				sdio_func_id(func));
-			//return -EINVAL;
+			return -EINVAL;
 		}
 	} else {
 		pr_err("sdio_func is not specified\n");
@@ -3345,9 +3516,9 @@ static int btmtk_sdio_suspend(struct device *dev)
 
 	ret = btmtk_sdio_set_own_back(FW_OWN);
 	if (ret)
-	    pr_err("%s set fw own fail\n", __func__);
-        pr_notice("%s return 0 directly\n", __func__);
-	return 0;//sdio_set_host_pm_flags(func, MMC_PM_KEEP_POWER);
+		pr_err("%s set fw own fail\n", __func__);
+
+	return sdio_set_host_pm_flags(func, MMC_PM_KEEP_POWER);
 }
 
 static int btmtk_sdio_resume(struct device *dev)
@@ -3361,16 +3532,23 @@ static int btmtk_sdio_resume(struct device *dev)
 
 	g_card->suspend_count--;
 	if (g_card->suspend_count) {
-		pr_warn("%s: data->suspend_count %d, return 0", __func__, g_card->suspend_count);
+		pr_info("%s: data->suspend_count %d, return 0", __func__, g_card->suspend_count);
 		return 0;
 	}
-
+#if SUPPORT_EINT
+	if (g_card->wobt_irq != 0 && atomic_read(&(g_card->irq_enable_count)) == 1) {
+		pr_info("%s:disable BT IRQ:%d\n", __func__, g_card->wobt_irq);
+		atomic_dec(&(g_card->irq_enable_count));
+		disable_irq_nosync(g_card->wobt_irq);
+	} else
+		pr_info("%s:irq_enable count:%d\n", __func__, atomic_read(&(g_card->irq_enable_count)));
+#endif
 	ret = btmtk_sdio_handle_leaving_WoBLE_state();
 
 	if (ret)
 		pr_err("%s: btmtk_sdio_handle_leaving_WoBLE_state return fail  %d", __func__, ret);
 
-	pr_info("%s begin return 0, do nothing\n", __func__);
+	pr_info("%s end\n", __func__);
 	return 0;
 }
 
@@ -3423,10 +3601,7 @@ static int btmtk_fops_open(struct inode *inode, struct file *file)
 
 	metabuffer.read_p = 0;
 	metabuffer.write_p = 0;
-#if 0 /* Move to btmtk_sdio_probe() */
-	spin_lock_init(&(metabuffer.spin_lock.lock));
-	pr_info("%s spin_lock_init end\n", __func__);
-#endif
+
 	if (g_priv == NULL) {
 		pr_err("%s g_priv is NULL\n", __func__);
 		return -ENOENT;
@@ -3480,6 +3655,7 @@ ssize_t btmtk_fops_write(struct file *filp, const char __user *buf,
 	static u8 waiting_for_hci_without_packet_type; /* INITIALISED_STATIC: do not initialise statics to 0 */
 	static u8 hci_packet_type = 0xff;
 	u32 copy_size = 0;
+	unsigned long c_result = 0;
 
 	if (!probe_ready) {
 		pr_err("%s probe_ready is %d return\n",
@@ -3513,8 +3689,13 @@ ssize_t btmtk_fops_write(struct file *filp, const char __user *buf,
 			pr_info("%d %02X", i, buf[i]);
 	}
 #endif
+	memset(userbuf, 0, MTK_TXDATA_SIZE);
+	c_result = copy_from_user(userbuf, buf, count);
 
-	copy_from_user(userbuf, buf, count);
+	if (c_result != 0) {
+		pr_err("%s copy_from_user failed!\n", __func__);
+		return -EFAULT;
+	}
 
 	if (userbuf[0] == 0x7) {
 		/* write CR */
@@ -3560,7 +3741,7 @@ ssize_t btmtk_fops_write(struct file *filp, const char __user *buf,
 		if (waiting_for_hci_without_packet_type == 1 && count == 1) {
 			pr_warn("%s: Waiting for hci_without_packet_type, but receive data count is 1!", __func__);
 			pr_warn("%s: Treat this packet as packet_type", __func__);
-			retval = memcpy(&hci_packet_type, &userbuf[0], 1);
+			memcpy(&hci_packet_type, &userbuf[0], 1);
 			waiting_for_hci_without_packet_type = 1;
 			retval = 1;
 			goto OUT;
@@ -3568,7 +3749,7 @@ ssize_t btmtk_fops_write(struct file *filp, const char __user *buf,
 
 		if (waiting_for_hci_without_packet_type == 0) {
 			if (count == 1) {
-				retval = memcpy(&hci_packet_type, &userbuf[0], 1);
+				memcpy(&hci_packet_type, &userbuf[0], 1);
 				waiting_for_hci_without_packet_type = 1;
 				retval = 1;
 				goto OUT;
@@ -3696,8 +3877,8 @@ ssize_t btmtk_fops_read(struct file *filp, char __user *buf,
 #endif
 		btmtk_print_buffer_conent(skb->data, skb->len);
 
-		if (btmtk_sdio_push_data_to_metabuffer(skb->data,
-				skb->len, bt_cb(skb)->pkt_type) < 0) {
+		if (btmtk_sdio_push_data_to_metabuffer(&metabuffer, skb->data,
+				skb->len, bt_cb(skb)->pkt_type, true) < 0) {
 			skb_queue_head(&g_priv->adapter->fops_queue, skb);
 			break;
 		}
@@ -3705,11 +3886,10 @@ ssize_t btmtk_fops_read(struct file *filp, char __user *buf,
 	} while (!skb_queue_empty(&g_priv->adapter->fops_queue));
 	unlock_unsleepable_lock(&(metabuffer.spin_lock));
 
-	return btmtk_sdio_pull_data_from_metabuffer(buf, count);
+	return btmtk_sdio_pull_data_from_metabuffer(&metabuffer, buf, count);
 
 OUT:
 	return copyLen;
-
 }
 
 static int btmtk_fops_fasync(int fd, struct file *file, int on)
@@ -3789,15 +3969,64 @@ static ssize_t btmtk_fops_readfwlog(struct file *filp,
 			size_t count,
 			loff_t *f_pos)
 {
-	int copyLen = 0;
+	struct sk_buff *skb = NULL;
+
+	if (!probe_ready) {
+		pr_err("%s probe_ready is %d return\n",
+			__func__, probe_ready);
+		return -EFAULT;
+	}
 
 	if (g_priv == NULL) {
-		pr_err("%s: ERROR, g_data is NULL!\n", __func__);
+		pr_info("%s g_priv is NULL\n", __func__);
+		return -EFAULT;
+	}
+
+	if (g_priv->adapter->fops_mode == 0) {
+		pr_info("%s fops_mode is 0\n", __func__);
+		return -EFAULT;
+	}
+
+	lock_unsleepable_lock(&(fwlog_metabuffer.spin_lock));
+	if (skb_queue_empty(&g_priv->adapter->fwlog_fops_queue)) {
+		/* if (filp->f_flags & O_NONBLOCK) { */
+		if (fwlog_metabuffer.write_p == fwlog_metabuffer.read_p) {
+			unlock_unsleepable_lock(&(fwlog_metabuffer.spin_lock));
+			return 0;
+		}
+	}
+
+	if (need_reset_stack == 1) {
+		kill_fasync(&fasync, SIGIO, POLL_IN);
+		need_reset_stack = 0;
+		pr_info("%s Call kill_fasync and set reset_stack 0\n",
+			__func__);
 		return -ENODEV;
 	}
 
-	pr_info("%s: OK\n", __func__);
-	return copyLen;
+	do {
+		skb = skb_dequeue(&g_priv->adapter->fwlog_fops_queue);
+		if (skb == NULL) {
+			pr_debug("%s skb=NULL break\n", __func__);
+			break;
+		}
+#if 0
+		pr_debug("%s pkt_type %d metabuffer.buffer %d",
+			__func__, bt_cb(skb)->pkt_type,
+			metabuffer.buffer[copyLen]);
+#endif
+		btmtk_print_buffer_conent(skb->data, skb->len);
+
+		if (btmtk_sdio_push_data_to_metabuffer(&fwlog_metabuffer, skb->data,
+				skb->len, bt_cb(skb)->pkt_type, false) < 0) {
+			skb_queue_head(&g_priv->adapter->fwlog_fops_queue, skb);
+			break;
+		}
+		kfree_skb(skb);
+	} while (!skb_queue_empty(&g_priv->adapter->fwlog_fops_queue));
+	unlock_unsleepable_lock(&(fwlog_metabuffer.spin_lock));
+
+	return btmtk_sdio_pull_data_from_metabuffer(&fwlog_metabuffer, buf, count);
 }
 
 static ssize_t btmtk_fops_writefwlog(
@@ -3809,9 +4038,18 @@ static ssize_t btmtk_fops_writefwlog(
 	u8 *i_fwlog_buf = kmalloc(HCI_MAX_COMMAND_BUF_SIZE, GFP_KERNEL);
 	u8 *o_fwlog_buf = kmalloc(HCI_MAX_COMMAND_SIZE, GFP_KERNEL);
 	const char *val_param = NULL;
+	unsigned long c_result = 0;
 
 	memset(i_fwlog_buf, 0, HCI_MAX_COMMAND_BUF_SIZE);
 	memset(o_fwlog_buf, 0, HCI_MAX_COMMAND_SIZE);
+	memset(userbuf_fwlog, 0, MTK_TXDATA_SIZE);
+
+	c_result = copy_from_user(userbuf_fwlog, buf, count);
+
+	if (c_result != 0) {
+		pr_err("%s copy_from_user failed!\n", __func__);
+		return -EFAULT;
+	}
 
 	btmtk_sdio_set_own_back(DRIVER_OWN);
 
@@ -3826,12 +4064,12 @@ static ssize_t btmtk_fops_writefwlog(
 	}
 
 	for (i = 0; i < count; i++) {
-		if (buf[i] != '=') {
-			i_fwlog_buf[i] = buf[i];
+		if (userbuf_fwlog[i] != '=') {
+			i_fwlog_buf[i] = userbuf_fwlog[i];
 			pr_debug("%s: tag_param %02x\n",
 				__func__, i_fwlog_buf[i]);
 		} else {
-			val_param = &buf[i+1];
+			val_param = &userbuf_fwlog[i+1];
 			if (strcmp(i_fwlog_buf, "log_lvl") == 0) {
 				pr_info("%s: btmtk_log_lvl = %d\n",
 					__func__, val_param[0] - 48);
@@ -3847,7 +4085,7 @@ static ssize_t btmtk_fops_writefwlog(
 		/* hci input command format : */
 		/* echo 01 be fc 01 05 > /dev/stpbtfwlog */
 		/* We take the data from index three to end. */
-		val_param = &buf[0];
+		val_param = &userbuf_fwlog[0];
 	}
 	length = strlen(val_param);
 
@@ -3919,11 +4157,33 @@ static unsigned int btmtk_fops_pollfwlog(
 {
 	unsigned int mask = 0;
 
+	if (!probe_ready) {
+		pr_err("%s probe_ready is %d return\n",
+			__func__, probe_ready);
+		return mask;
+	}
+
 	if (g_priv == NULL) {
-		pr_err("%s: ERROR, g_data is NULL!\n", __func__);
+		pr_err("%s g_priv is NULL\n", __func__);
 		return -ENODEV;
 	}
 
+	if (fwlog_metabuffer.write_p != fwlog_metabuffer.read_p)
+		mask |= (POLLIN | POLLRDNORM);
+
+	if (skb_queue_empty(&g_priv->adapter->fwlog_fops_queue)) {
+		poll_wait(file, &fw_log_inq, wait);
+
+		if (!skb_queue_empty(&g_priv->adapter->fwlog_fops_queue)) {
+			mask |= (POLLIN | POLLRDNORM);
+			/* pr_info("%s poll done\n", __func__); */
+		}
+	} else
+		mask |= (POLLIN | POLLRDNORM);
+
+	mask |= (POLLOUT | POLLWRNORM);
+
+	/* pr_info("%s poll mask 0x%x\n", __func__,mask); */
 	return mask;
 }
 
@@ -3941,6 +4201,36 @@ static long btmtk_fops_unlocked_ioctlfwlog(
 
 	return retval;
 }
+
+/*============================================================================*/
+/* Interface Functions : Proc */
+/*============================================================================*/
+#define __________________________________________Interface_Function_for_Proc
+static int btmtk_proc_show(struct seq_file *m, void *v)
+{
+	seq_printf(m, "%s\n", fw_version_str);
+	return 0;
+}
+
+static int btmtk_proc_open(struct inode *inode, struct  file *file)
+{
+	return single_open(file, btmtk_proc_show, NULL);
+}
+
+void btmtk_proc_create_new_entry(void)
+{
+	struct proc_dir_entry *proc_show_entry;
+
+	pr_info("proc initialized");
+
+	g_proc_dir = proc_mkdir("stpbt", 0);
+	if (g_proc_dir == 0) {
+		pr_info("Unable to creat dir");
+		return;
+	}
+	proc_show_entry =  proc_create("bt_fw_version", 0644, g_proc_dir, &BT_proc_fops);
+}
+
 
 static int BTMTK_major;
 static int BT_majorfwlog;
@@ -4005,6 +4295,7 @@ static int BTMTK_init(void)
 	fw_dump_end_checking_task_should_stop = 0;
 	fw_is_doing_coredump = 0;
 
+	btmtk_proc_create_new_entry();
 
 	ret = alloc_chrdev_region(&devID, 0, 1, "BT_chrdev");
 	if (ret) {
@@ -4099,6 +4390,14 @@ static void BTMTK_exit(void)
 	dev_t devIDfwlog = g_devIDfwlog;
 
 	pr_info("%s\n", __func__);
+
+	if (g_proc_dir != NULL) {
+		remove_proc_entry("bt_fw_version", g_proc_dir);
+		remove_proc_entry("stpbt", NULL);
+		g_proc_dir = NULL;
+		pr_info("proc device node and folder removed!!");
+	}
+
 	if (g_card) {
 		pr_info("%s 1\n", __func__);
 		if (g_card->woble_setting_file_name) {
@@ -4161,6 +4460,11 @@ static int btmtk_sdio_allocate_memory(void)
 		memset(userbuf, 0, MTK_TXDATA_SIZE);
 	}
 
+	if (userbuf_fwlog == NULL) {
+		userbuf_fwlog = kmalloc(MTK_TXDATA_SIZE, GFP_ATOMIC);
+		memset(userbuf_fwlog, 0, MTK_TXDATA_SIZE);
+	}
+
 	return 0;
 }
 
@@ -4171,6 +4475,8 @@ static int btmtk_sdio_free_memory(void)
 	kfree(rxbuf);
 
 	kfree(userbuf);
+
+	kfree(userbuf_fwlog);
 
 	kfree(fw_dump_ptr);
 

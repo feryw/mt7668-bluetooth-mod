@@ -117,6 +117,7 @@ extern u8 btmtk_log_lvl;
 /**
  * Log file path & name, the default path is /sdcard
  */
+#define PRINT_DUMP_COUNT		20
 #define SYSLOG_FNAME			"bt_sys_log"
 #define FWDUMP_FNAME			"bt_fw_dump"
 #ifdef BTMTK_LOG_PATH
@@ -205,5 +206,9 @@ extern u8 btmtk_log_lvl;
 #define MAX_BIN_FILE_NAME_LEN 32
 
 
+/**
+ *  Firmware version size
+ */
+#define FW_VERSION_BUF_SIZE 15	/* 14 bytes for firmware version + 1 bytes for '0' */
 
 #endif /* __BTMTK_DEFINE_H__ */

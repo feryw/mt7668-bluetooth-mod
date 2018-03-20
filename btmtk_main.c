@@ -67,12 +67,12 @@ static int btmtk_tx_pkt(struct btmtk_private *priv, struct sk_buff *skb)
 	int ret = 0;
 	u32 sdio_header_len = 0;
 
-	pr_debug("%s skb->len %d\n", __func__, skb->len);
-
 	if (!skb) {
 		pr_warn("%s skb is NULL return -EINVAL\n", __func__);
 		return -EINVAL;
 	}
+
+	pr_debug("%s skb->len %d\n", __func__, skb->len);
 
 	if (!skb->data) {
 		pr_warn("%s skb->data is NULL return -EINVAL\n", __func__);
@@ -106,6 +106,7 @@ static void btmtk_init_adapter(struct btmtk_private *priv)
 
 	skb_queue_head_init(&priv->adapter->tx_queue);
 	skb_queue_head_init(&priv->adapter->fops_queue);
+	skb_queue_head_init(&priv->adapter->fwlog_fops_queue);
 	priv->adapter->ps_state = PS_AWAKE;
 
 	buf_size = ALIGN_SZ(SDIO_BLOCK_SIZE, BTSDIO_DMA_ALIGN);

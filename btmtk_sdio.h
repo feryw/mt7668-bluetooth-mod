@@ -14,9 +14,12 @@
 #ifndef _BTMTK_SDIO_H_
 #define _BTMTK_SDIO_H_
 #include "btmtk_config.h"
+#if ((SUPPORT_UNIFY_WOBLE & SUPPORT_ANDROID) || SUPPORT_EINT)
+#include <linux/wakelock.h>
+#endif
 
 
-#define VERSION "v0.0.0.41_2017122701"
+#define VERSION "v0.0.0.51_2018031901_YOCTO"
 
 #define SDIO_HEADER_LEN                 4
 
@@ -171,6 +174,17 @@ struct btmtk_sdio_card {
 #if (SUPPORT_UNIFY_WOBLE & SUPPORT_ANDROID)
 	struct					wake_lock woble_wlock;
 #endif
+
+#if SUPPORT_EINT
+	struct					wake_lock eint_wlock;
+#endif
+
+#if SUPPORT_EINT
+	/* WoBLE */
+	unsigned int wobt_irq;
+	int wobt_irqlevel;
+	atomic_t irq_enable_count;
+#endif
 };
 struct btmtk_sdio_device {
 	const char *helper;
@@ -323,3 +337,4 @@ static inline int is_support_unify_woble(struct btmtk_sdio_card *data)
 
 
 #endif
+

@@ -93,6 +93,8 @@ struct btmtk_adapter {
 	u32 int_count;
 	struct sk_buff_head tx_queue;
 	struct sk_buff_head fops_queue;
+	struct sk_buff_head fwlog_fops_queue;
+	struct sk_buff_head fwlog_tx_queue;
 	u8 fops_mode;
 	u8 psmode;
 	u8 ps_state;

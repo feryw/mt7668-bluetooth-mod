@@ -63,5 +63,11 @@
 #define SUPPORT_LEGACY_WOBLE 0
 #define BT_RC_VENDOR_DEFAULT 1
 #define BT_RC_VENDOR_S0 0
+#define SUPPORT_EINT 0
+
+#if SUPPORT_EINT
+#define WAIT_POWERKEY_TIMEOUT 5000
+#endif
+
 
 #endif /* __BTMTK_CONFIG_H__ */
