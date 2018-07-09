@@ -19,7 +19,7 @@
 #endif
 
 
-#define VERSION "v0.0.0.51_2018031901_YOCTO"
+#define VERSION "v0.0.0.52_2018070901_YOCTO"
 
 #define SDIO_HEADER_LEN                 4
 
@@ -224,6 +224,7 @@ struct _PATCH_HEADER {
 /*CHISR*/
 #define RX_PKT_LEN             0xFFFF0000
 #define FIRMWARE_INT             0x0000FE00
+#define FIRMWARE_INT_BIT15       0x00008000/*FW inform driver don't change to fw own for dore dump*/
 #define TX_FIFO_OVERFLOW         0x00000100
 #define FW_INT_IND_INDICATOR        0x00000080
 #define TX_COMPLETE_COUNT         0x00000070

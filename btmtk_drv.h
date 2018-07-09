@@ -19,9 +19,9 @@
 #include <linux/slab.h>
 #include <net/bluetooth/bluetooth.h>
 
-#define SAVE_FW_DUMP_IN_KERNEL	1
+#define SAVE_FW_DUMP_IN_KERNEL 0
 
-#define SUPPORT_FW_DUMP		1
+#define SUPPORT_FW_DUMP 1
 #define BTM_HEADER_LEN                  5
 #define BTM_UPLD_SIZE                   2312
 
@@ -126,6 +126,7 @@ struct btmtk_private {
 	struct task_struct *fw_dump_tsk;
 	struct task_struct *fw_dump_end_check_tsk;
 #endif
+	bool no_fw_own;
 };
 
 #define MTK_VENDOR_PKT                 0xFE
@@ -222,13 +223,9 @@ struct ring_buffer {
 };
 
 #ifdef CONFIG_DEBUG_FS
-
 #define FIXED_STPBT_MAJOR_DEV_ID 111
 
-
-
 #define FW_DUMP_END_EVENT "coredump end"
-
 #endif
 
 #endif
