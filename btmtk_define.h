@@ -43,31 +43,6 @@
 #define BTMTK_LOG_LEVEL_DEFAULT		BTMTK_LOG_LEVEL_INFO	/* default setting */
 
 #if defined(CONFIG_DEBUG_FS) && (CONFIG_DEBUG_FS == 1)
-
-extern u8 btmtk_log_lvl;
-
-#define BTUSB_ERR(fmt, ...)	 \
-	do { if (btmtk_log_lvl >= BTMTK_LOG_LEVEL_ERROR) pr_warn("[btmtk_err] "fmt"\n", ##__VA_ARGS__); } while (0)
-#define BTUSB_WARN(fmt, ...)	\
-	do { if (btmtk_log_lvl >= BTMTK_LOG_LEVEL_WARNING) pr_warn("[btmtk_warn] "fmt"\n", ##__VA_ARGS__); } while (0)
-#define BTUSB_INFO(fmt, ...)	\
-	do { if (btmtk_log_lvl >= BTMTK_LOG_LEVEL_INFO) pr_warn("[btmtk_info] "fmt"\n", ##__VA_ARGS__); } while (0)
-#define BTUSB_DBG(fmt, ...)	 \
-	do { if (btmtk_log_lvl >= BTMTK_LOG_LEVEL_DEBUG) pr_warn("[btmtk_debug] "fmt"\n", ##__VA_ARGS__); } while (0)
-
-#define BTUSB_DBG_RAW(p, l, fmt, ...)						\
-	do {									\
-		if (btmtk_log_lvl >= BTMTK_LOG_LEVEL_DEBUG) {			\
-			int raw_count = 0;					\
-			const unsigned char *ptr = p;				\
-			pr_cont("[btmtk_debug] "fmt, ##__VA_ARGS__);		\
-			for (raw_count = 0; raw_count <= l; ++raw_count) {	\
-				pr_cont(" %02X", ptr[raw_count]);		\
-			}							\
-			pr_cont("\n");						\
-		}								\
-	} while (0)
-
 #define BTSDIO_INFO_RAW(p, l, fmt, ...)						\
 	do {									\
 		{			\
@@ -95,14 +70,9 @@ extern u8 btmtk_log_lvl;
 	} while (0)
 
 #else /* CONFIG_DEBUG_FS */
+#define BTSDIO_INFO_RAW(p, l, fmt, ...)
 
-#define BTUSB_ERR(fmt, ...)	 pr_warn("[btmtk_err] "fmt"\n", ##__VA_ARGS__)
-#define BTUSB_WARN(fmt, ...)	pr_warn("[btmtk_warn] "fmt"\n", ##__VA_ARGS__)
-#define BTUSB_INFO(fmt, ...)	pr_warn("[btmtk_info] "fmt"\n", ##__VA_ARGS__)
-#define BTUSB_DBG(fmt, ...)
-#define BTUSB_DBG_RAW(p, l, fmt, ...)
-#define BTUSB_INFO_RAW(p, l, fmt, ...)
-
+#define BTSDIO_DEBUG_RAW(p, l, fmt, ...)
 #endif /* CONFIG_DEBUG_FS */
 
 /**
