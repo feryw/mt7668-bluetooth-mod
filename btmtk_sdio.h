@@ -19,7 +19,7 @@
 #endif
 
 
-#define VERSION "v0.0.0.52_2018070901_YOCTO"
+#define VERSION "v0.0.0.53_2018072701_YOCTO"
 
 #define SDIO_HEADER_LEN                 4
 
@@ -323,6 +323,31 @@ enum {
 #define COMPARE_SUCCESS				1
 #define WOBLE_COMP_EVENT_TIMO		5000
 
+/**
+ * BTMTK ioctl
+ */
+
+#define BTMTK_IOCTL_MAGIC 'k'
+
+#if SUPPORT_BT_STEREO
+#define BTMTK_IOCTL_STEREO_GET_CLK _IOR(BTMTK_IOCTL_MAGIC, 1, void *)
+#define BTMTK_IOCTL_STEREO_SET_PARA _IOW(BTMTK_IOCTL_MAGIC, 2, void *)
+#endif
+
+
+#if SUPPORT_BT_STEREO
+struct bt_stereo_clk {
+	u64 sys_clk;
+	u64 fw_clk;
+};
+
+struct bt_stereo_para {
+	u16 handle;
+	u8 method;
+	u32 period;
+	u16 active_slots;
+};
+#endif
 
 /**
  * Inline functions

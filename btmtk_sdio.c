@@ -54,6 +54,14 @@
 void sdio_card_detect(int card_present);
 #endif
 
+#if SUPPORT_BT_STEREO
+#include <linux/of.h>
+#include <linux/of_irq.h>
+struct bt_stereo_clk stereo_clk;
+unsigned int stereo_irq = 0;
+unsigned int clk_flag = 0;
+#endif
+
 static dev_t g_devIDfwlog;
 static struct class *pBTClass;
 static struct device *pBTDev;
@@ -2239,6 +2247,49 @@ static int btmtk_sdio_card_to_host(struct btmtk_private *priv, const u8 *event, 
 FW_DONE:
 #endif
 
+#if SUPPORT_BT_STEREO
+	if (rxbuf[SDIO_HEADER_LEN] == 0x04
+			&& rxbuf[SDIO_HEADER_LEN+1] == 0x0E
+			&& rxbuf[SDIO_HEADER_LEN+2] == 0x04
+			&& rxbuf[SDIO_HEADER_LEN+3] == 0x01
+			&& rxbuf[SDIO_HEADER_LEN+4] == 0x02
+			&& rxbuf[SDIO_HEADER_LEN+5] == 0xFD) {
+		pr_info("%s: This is btclk event, status:%02x\n",
+			__func__, rxbuf[SDIO_HEADER_LEN+6]);
+		buf_len = rx_length-(MTK_SDIO_PACKET_HEADER_SIZE+1);
+		goto exit;
+	}
+
+	/*receive BT clock data*/
+	if (rx_length >= (SDIO_HEADER_LEN+13)
+			&& rxbuf[SDIO_HEADER_LEN] == 0x04
+			&& rxbuf[SDIO_HEADER_LEN+1] == 0xFF
+			&& rxbuf[SDIO_HEADER_LEN+3] == 0x41) {
+		pr_debug("%s: This is btclk data - %d, %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x\n",
+			__func__, rx_length,
+			rxbuf[SDIO_HEADER_LEN+0], rxbuf[SDIO_HEADER_LEN+1], rxbuf[SDIO_HEADER_LEN+2],
+			rxbuf[SDIO_HEADER_LEN+3], rxbuf[SDIO_HEADER_LEN+4], rxbuf[SDIO_HEADER_LEN+5],
+			rxbuf[SDIO_HEADER_LEN+6], rxbuf[SDIO_HEADER_LEN+7], rxbuf[SDIO_HEADER_LEN+8],
+			rxbuf[SDIO_HEADER_LEN+9], rxbuf[SDIO_HEADER_LEN+10], rxbuf[SDIO_HEADER_LEN+11],
+			rxbuf[SDIO_HEADER_LEN+12], rxbuf[SDIO_HEADER_LEN+13], rxbuf[SDIO_HEADER_LEN+14],
+			rxbuf[SDIO_HEADER_LEN+15], rxbuf[SDIO_HEADER_LEN+16], rxbuf[SDIO_HEADER_LEN+17]);
+
+		if (rxbuf[SDIO_HEADER_LEN+12] == 0x0) {
+			u64 intra_clk = 0, clk = 0;
+			memcpy(&intra_clk, &rxbuf[SDIO_HEADER_LEN+6], 2);
+			memcpy(&clk, &rxbuf[SDIO_HEADER_LEN+8], 4);
+			stereo_clk.fw_clk = intra_clk + (clk&0x0FFFFFFC)*3125/10;
+			clk_flag |= 0x02;
+			pr_debug("%s: btclk intra:%lx, clk:%lx, fw_clk:%ld\n", __func__, intra_clk, clk, stereo_clk.fw_clk);
+		} else {
+			pr_warning("%s: No ACL CONNECTION(%d), disable event and interrupt\n", __func__, rxbuf[SDIO_HEADER_LEN+12]);
+		}
+
+		buf_len = rx_length-(MTK_SDIO_PACKET_HEADER_SIZE+1);
+		goto exit;
+	}
+#endif
+
 	/*receive picus data to fwlog_queue*/
 	if (rx_length > (SDIO_HEADER_LEN+8)) {
 		dump_len = (rxbuf[SDIO_HEADER_LEN+1]&0x0F) * 256 + rxbuf[SDIO_HEADER_LEN+2];
@@ -2847,6 +2898,44 @@ static int btmtk_sdio_RegisterBTIrq(struct btmtk_sdio_card *data)
 	return 0;
 }
 #endif
+
+#if SUPPORT_BT_STEREO
+static int btmtk_stereo_irq_handler(int irq, void *dev)
+{
+	/* Get sys clk */
+	struct timeval tv;
+	do_gettimeofday(&tv);
+	stereo_clk.sys_clk = tv.tv_sec*1000000 + tv.tv_usec;
+	clk_flag = 0x01;
+	pr_debug("%s: tv_sec %d, tv_usec %d sys_clk %ld\n", __func__, tv.tv_sec, tv.tv_usec, stereo_clk.sys_clk);
+	return 0;
+}
+
+static int btmtk_stereo_reg_irq(void)
+{
+	int ret;
+	struct device_node *node;
+
+	node = of_find_compatible_node(NULL, NULL, "mediatek,connectivity-combo");
+	if (node) {
+		stereo_irq = irq_of_parse_and_map(node, 1);
+		ret = request_irq(stereo_irq, (irq_handler_t) btmtk_stereo_irq_handler,
+						IRQF_TRIGGER_RISING, "BTSTEREO_ISR_Handler", NULL);
+	}
+
+	if (ret)
+		pr_err("%s fail(%d)!!! irq_number=%d\n", __func__, ret, stereo_irq);
+
+	return ret;
+}
+
+static void btmtk_stereo_unreg_irq(void)
+{
+	free_irq(stereo_irq, NULL);
+	return;
+}
+#endif
+
 static int btmtk_sdio_probe(struct sdio_func *func,
 					const struct sdio_device_id *id)
 {
@@ -2982,6 +3071,10 @@ static int btmtk_sdio_probe(struct sdio_func *func,
 	wake_lock_init(&g_card->eint_wlock, WAKE_LOCK_SUSPEND, "btevent_eint");
 #endif
 
+#if SUPPORT_BT_STEREO
+	btmtk_stereo_reg_irq();
+#endif
+
 	pr_info("%s normal end\n", __func__);
 	probe_ready = true;
 	return 0;
@@ -2999,6 +3092,10 @@ static void btmtk_sdio_remove(struct sdio_func *func)
 
 	pr_info("%s begin user_rmmod %d\n", __func__, user_rmmod);
 	probe_ready = false;
+
+#if SUPPORT_BT_STEREO
+	btmtk_stereo_unreg_irq();
+#endif
 
 	if (func) {
 		card = sdio_get_drvdata(func);
@@ -3995,12 +4092,66 @@ unsigned int btmtk_fops_poll(struct file *filp, poll_table *wait)
 	return mask;
 }
 
-long btmtk_fops_unlocked_ioctl(struct file *filp,
+static long btmtk_fops_unlocked_ioctl(struct file *filp,
 				unsigned int cmd, unsigned long arg)
 {
-	u32 retval = 0;
+	u32 ret = 0;
+	int err = 0;
 
-	return retval;
+#if SUPPORT_BT_STEREO
+	int cnt = 0;
+	struct bt_stereo_para stereo_para;
+	struct sk_buff *skb = NULL;
+	u8 set_btclk[] = {0x01, 0x02, 0xFD, 0x0B,
+		0x00, 0x00,			/* Handle */
+		0x00,				/* Method */
+						/* bit0~3 - 0:CVSD remove,1:GPIO,2:In-band with transport*/
+						/* bit4~7 - 0:Shared memory,1:auto event */
+		0x00, 0x00, 0x00, 0x00,	/* Period = value*0.625ms */
+		0x09,				/* GPIO num - 0x01:BGF_INT_B,0x09:GPIO0 */
+		0x01,				/* trigger mode - 0:Low,1:High */
+		0x00, 0x00};			/* active slots = value*0.625ms */
+#endif
+
+	switch(cmd) {
+#if SUPPORT_BT_STEREO
+	case BTMTK_IOCTL_STEREO_GET_CLK:
+		pr_debug("%s: BTMTK_IOCTL_STEREO_GET_CLK cmd\n", __func__);
+		for (cnt = 100; cnt > 0; cnt--) {
+			if (clk_flag == 0x3)
+				break;
+			msleep(1);
+		}
+		if (clk_flag != 0x3)
+			return -EAGAIN;
+
+		if (copy_to_user((struct bt_stereo_clk __user*)arg, &stereo_clk, sizeof(struct bt_stereo_clk)))
+			return -EBUSY;
+		break;
+	case BTMTK_IOCTL_STEREO_SET_PARA:
+		pr_debug("%s: BTMTK_IOCTL_STEREO_SET_PARA cmd\n", __func__);
+		if (copy_from_user(&stereo_para, (struct bt_stereo_para __user*)arg, sizeof(struct bt_stereo_para)))
+			return -EBUSY;
+
+		/* Send and check HCI cmd */
+		memcpy(&set_btclk[4], &stereo_para.handle, sizeof(stereo_para.handle));
+		memcpy(&set_btclk[6], &stereo_para.method, sizeof(stereo_para.method));
+		memcpy(&set_btclk[7], &stereo_para.period, sizeof(stereo_para.period));
+		memcpy(&set_btclk[13], &stereo_para.active_slots, sizeof(stereo_para.active_slots));
+
+		skb = bt_skb_alloc(sizeof(set_btclk)-1, GFP_ATOMIC);
+		bt_cb(skb)->pkt_type = set_btclk[0];
+		memcpy(&skb->data[0], &set_btclk[1], sizeof(set_btclk)-1);
+
+		skb->len = sizeof(set_btclk)-1;
+		skb_queue_tail(&g_priv->adapter->tx_queue, skb);
+		wake_up_interruptible(&g_priv->main_thread.wait_q);
+		break;
+#endif
+	default:
+		return -EINVAL;
+	}
+	return ret;
 }
 
 static int btmtk_fops_openfwlog(struct inode *inode,

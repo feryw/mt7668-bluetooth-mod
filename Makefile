@@ -13,9 +13,12 @@ $(SDIO_MOD_NAME)-objs := $(SDIO_CFILES:.c=.o)
 # Common
 ###############################################################################
 ifeq ($(PLATFORM),MT8516_YOCTO)
-obj-m := $(SDIO_MOD_NAME).o
+	obj-m := $(SDIO_MOD_NAME).o
+	ifeq ($(SUPPORT_MTK_BT_STEREO),yes)
+		ccflags-y += -DSUPPORT_BT_STEREO=1
+	endif
 else
-obj-m := $(USB_MOD_NAME).o $(SDIO_MOD_NAME).o
+	obj-m := $(USB_MOD_NAME).o $(SDIO_MOD_NAME).o
 endif
 
 all:
