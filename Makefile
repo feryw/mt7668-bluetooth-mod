@@ -1,7 +1,3 @@
-export KERNEL_SRC := /lib/modules/$(shell uname -r)/build
-
-$(warning $(CC))
-
 ###############################################################################
 # SDIO
 ###############################################################################
@@ -9,6 +5,7 @@ SDIO_MOD_NAME = btmtksdio
 SDIO_CFILES := \
 	btmtk_sdio.c btmtk_main.c
 $(SDIO_MOD_NAME)-objs := $(SDIO_CFILES:.c=.o)
+
 ###############################################################################
 # Common
 ###############################################################################
@@ -22,20 +19,16 @@ else
 endif
 
 all:
-	make -C $(KERNEL_SRC) M=$(PWD) modules
-
-sdio:
-ifeq ($(PLATFORM),MT8516_YOCTO)
-	make -C $(LINUX_SRC) M=$(PWD) modules
-else
-	make -C $(KERNEL_SRC) M=$(PWD) $(SDIO_MOD_NAME).ko
-endif
+	$(MAKE) -C $(KERNEL_SRC) M=$(PWD)
 
 modules_install:
 	$(MAKE) -C $(KERNEL_SRC) M=$(PWD) modules_install
 
 clean:
-	make -C $(KERNEL_SRC) M=$(PWD) clean
+	rm -f *.o *~ core .depend .*.cmd *.ko *.mod.c
+	rm -f Module.markers Module.symvers modules.order
+	rm -rf .tmp_versions Modules.symvers
+
 # Check coding style
 export IGNORE_CODING_STYLE_RULES := NEW_TYPEDEFS,LEADING_SPACE,CODE_INDENT,SUSPECT_CODE_INDENT
 ccs:
