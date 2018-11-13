@@ -31,6 +31,9 @@ else
 	make -C $(KERNEL_SRC) M=$(PWD) $(SDIO_MOD_NAME).ko
 endif
 
+modules_install:
+	$(MAKE) -C $(KERNEL_SRC) M=$(PWD) modules_install
+
 clean:
 	make -C $(KERNEL_SRC) M=$(PWD) clean
 # Check coding style
