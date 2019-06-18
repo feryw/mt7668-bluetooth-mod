@@ -329,13 +329,13 @@ enum {
 
 #define BTMTK_IOCTL_MAGIC 'k'
 
-#if SUPPORT_BT_STEREO
+#ifdef SUPPORT_BT_STEREO
 #define BTMTK_IOCTL_STEREO_GET_CLK _IOR(BTMTK_IOCTL_MAGIC, 1, void *)
 #define BTMTK_IOCTL_STEREO_SET_PARA _IOW(BTMTK_IOCTL_MAGIC, 2, void *)
 #endif
 
 
-#if SUPPORT_BT_STEREO
+#ifdef SUPPORT_BT_STEREO
 struct bt_stereo_clk {
 	u64 sys_clk;
 	u64 fw_clk;

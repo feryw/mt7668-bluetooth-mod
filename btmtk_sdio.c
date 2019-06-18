@@ -54,7 +54,7 @@
 void sdio_card_detect(int card_present);
 #endif
 
-#if SUPPORT_BT_STEREO
+#ifdef SUPPORT_BT_STEREO
 #include <linux/of.h>
 #include <linux/of_irq.h>
 struct bt_stereo_clk stereo_clk;
@@ -2248,7 +2248,7 @@ static int btmtk_sdio_card_to_host(struct btmtk_private *priv, const u8 *event, 
 FW_DONE:
 #endif
 
-#if SUPPORT_BT_STEREO
+#ifdef SUPPORT_BT_STEREO
 	if (rxbuf[SDIO_HEADER_LEN] == 0x04
 			&& rxbuf[SDIO_HEADER_LEN+1] == 0x0E
 			&& rxbuf[SDIO_HEADER_LEN+2] == 0x04
@@ -2423,12 +2423,17 @@ FW_DONE:
 			skb_put(skb_hci, buf_len);
 
 			memcpy(skb_hci->data, fops_skb->data, buf_len);
+
+#if KERNEL_VERSION(4, 5, 0) > LINUX_VERSION_CODE
+			bt_cb((skb_hci))->pkt_type = type;
+#else
 			hci_skb_pkt_type(skb_hci) = type;
+#endif
 
 			ret = hci_recv_frame(hdev, skb_hci);
 			if (ret < 0)
 				printk(KERN_ERR "XXX: error recv frame: %d\n", ret);
-		}
+			}
 
 		fops_skb->len = buf_len;
 		lock_unsleepable_lock(&(metabuffer.spin_lock));
@@ -2913,7 +2918,7 @@ static int btmtk_sdio_RegisterBTIrq(struct btmtk_sdio_card *data)
 }
 #endif
 
-#if SUPPORT_BT_STEREO
+#ifdef SUPPORT_BT_STEREO
 static int btmtk_stereo_irq_handler(int irq, void *dev)
 {
 	/* Get sys clk */
@@ -3108,7 +3113,7 @@ static int btmtk_sdio_probe(struct sdio_func *func,
 	wake_lock_init(&g_card->eint_wlock, WAKE_LOCK_SUSPEND, "btevent_eint");
 #endif
 
-#if SUPPORT_BT_STEREO
+#ifdef SUPPORT_BT_STEREO
 	btmtk_stereo_reg_irq();
 #endif
 
@@ -3159,7 +3164,7 @@ static void btmtk_sdio_remove(struct sdio_func *func)
 	hci_unregister_dev(hdev);
 	hci_free_dev(hdev);
 
-#if SUPPORT_BT_STEREO
+#ifdef SUPPORT_BT_STEREO
 	btmtk_stereo_unreg_irq();
 #endif
 
@@ -4164,7 +4169,7 @@ static long btmtk_fops_unlocked_ioctl(struct file *filp,
 	u32 ret = 0;
 	int err = 0;
 
-#if SUPPORT_BT_STEREO
+#ifdef SUPPORT_BT_STEREO
 	int cnt = 0;
 	struct bt_stereo_para stereo_para;
 	struct sk_buff *skb = NULL;
@@ -4180,7 +4185,7 @@ static long btmtk_fops_unlocked_ioctl(struct file *filp,
 #endif
 
 	switch(cmd) {
-#if SUPPORT_BT_STEREO
+#ifdef SUPPORT_BT_STEREO
 	case BTMTK_IOCTL_STEREO_GET_CLK:
 		pr_debug("%s: BTMTK_IOCTL_STEREO_GET_CLK cmd\n", __func__);
 		for (cnt = 100; cnt > 0; cnt--) {
