@@ -146,7 +146,12 @@ static int btmtk_service_main_thread(void *data)
 	struct btmtk_thread *thread = data;
 	struct btmtk_private *priv = thread->priv;
 	struct btmtk_adapter *adapter = NULL;
+
+#if KERNEL_VERSION(4, 13, 0) > LINUX_VERSION_CODE
+	wait_queue_t wait;
+#else
 	wait_queue_entry_t wait;
+#endif
 	struct sk_buff *skb;
 	int ret = 0;
 	int i = 0;
