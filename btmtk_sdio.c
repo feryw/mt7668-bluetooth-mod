@@ -1968,6 +1968,7 @@ static int btmtk_sdio_download_rom_patch(
 	u2SwVer = patchHdr->u2SwVer;
 	u4PatchVer = patchHdr->u4PatchVer;
 
+#if 0
 	pr_debug("=====================================\n");
 	pr_info("===============Patch Info============\n");
 	pr_info("Built Time = %s\n", cDateTime);
@@ -1986,6 +1987,7 @@ static int btmtk_sdio_download_rom_patch(
 			patchHdr->ucPlatform[3]);
 	pr_info("Patch start addr = %02x\n", patchHdr->u2PatchStartAddr);
 	pr_info("=====================================\n");
+#endif
 
 	fwbuf += sizeof(struct _PATCH_HEADER);
 	pr_debug("%s PATCH_HEADER size %zd\n",
