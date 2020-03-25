@@ -3141,6 +3141,7 @@ static int btmtk_sdio_probe(struct sdio_func *func,
 	hdev->close    = btsdio_close;
 	hdev->flush    = btsdio_flush;
 	hdev->send     = btsdio_send_frame;
+	hdev->hw_info  = "mt7668";
 
 	ret = hci_register_dev(hdev);
 	if (ret < 0) {
